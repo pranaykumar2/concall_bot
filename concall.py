@@ -503,7 +503,7 @@ class ConcallResultsBot:
     )
     def download_pdf(self, url: str, output_path: Path) -> bool:
         """
-        Download PDF from URL using primed session
+        Download PDF from URL using primed session with fallback support
         
         Args:
             url: URL to download PDF from
@@ -514,15 +514,49 @@ class ConcallResultsBot:
         """
         logger.info(f"Downloading PDF from {url}")
         
-        # Session already has headers and cookies from __init__
-        response = self.session.get(url, timeout=60)
-        response.raise_for_status()
-        
-        with open(output_path, 'wb') as f:
-            f.write(response.content)
-        
-        logger.info(f"PDF saved to {output_path}")
-        return True
+        try:
+            # Session already has headers and cookies from __init__
+            response = self.session.get(url, timeout=60)
+            response.raise_for_status()
+            
+            with open(output_path, 'wb') as f:
+                f.write(response.content)
+            
+            logger.info(f"PDF saved to {output_path}")
+            return True
+            
+        except requests.exceptions.HTTPError as e:
+            # Check if 404 and if we can try a fallback
+            if e.response.status_code == 404:
+                logger.warning(f"Primary link 404s. Attempting fallback for {url}")
+                
+                # BSE Fallback Logic: Convert AnnPdfOpen.aspx link to direct AttachLive link
+                # Original: https://www.bseindia.com/stockinfo/AnnPdfOpen.aspx?Pname=GUID.pdf
+                # Fallback: https://www.bseindia.com/xml-data/corpfiling/AttachLive/GUID.pdf
+                
+                try:
+                    from urllib.parse import urlparse, parse_qs
+                    parsed = urlparse(url)
+                    params = parse_qs(parsed.query)
+                    
+                    if 'Pname' in params:
+                        pname = params['Pname'][0]
+                        fallback_url = f"https://www.bseindia.com/xml-data/corpfiling/AttachLive/{pname}"
+                        
+                        logger.info(f"Trying fallback URL: {fallback_url}")
+                        fallback_response = self.session.get(fallback_url, timeout=60)
+                        fallback_response.raise_for_status()
+                        
+                        with open(output_path, 'wb') as f:
+                            f.write(fallback_response.content)
+                            
+                        logger.info(f"PDF saved from fallback to {output_path}")
+                        return True
+                except Exception as fallback_error:
+                    logger.error(f"Fallback failed: {fallback_error}")
+            
+            # Re-raise original error if fallback didn't work/apply
+            raise e
     
     def generate_pdf_filename(self, company_name: str, description: str) -> str:
         """

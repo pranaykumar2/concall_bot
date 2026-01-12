@@ -55,12 +55,12 @@ class ConcallResultsBot:
             self.channel_id = config.TELEGRAM_CHANNEL_ID
             self.session = requests.Session()
             
-            # Network Engineer Grade Headers for BSE
+            # Network Engineer Grade Headers for BSE (Updated for 2026 Chrome 143)
             self.browser_headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
                 "Accept-Language": "en-US,en;q=0.9",
-                "Accept-Encoding": "gzip, deflate, br",
+                "Accept-Encoding": "gzip, deflate, br, zstd",
                 "Referer": "https://www.bseindia.com/",
                 "Connection": "keep-alive",
                 "Upgrade-Insecure-Requests": "1",
@@ -68,9 +68,11 @@ class ConcallResultsBot:
                 "Sec-Fetch-Mode": "navigate",
                 "Sec-Fetch-Site": "none",
                 "Sec-Fetch-User": "?1",
-                "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+                "Sec-Ch-Ua": '"Google Chrome";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
                 "Sec-Ch-Ua-Mobile": "?0",
-                "Sec-Ch-Ua-Platform": '"Windows"'
+                "Sec-Ch-Ua-Platform": '"Windows"',
+                "Priority": "u=0, i",
+                "DNT": "1"
             }
             self.session.headers.update(self.browser_headers)
             

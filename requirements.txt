@@ -6,5 +6,5 @@ python-dotenv
 pytz
 httpx
 Pillow
-requests
+aiofiles
 colorama

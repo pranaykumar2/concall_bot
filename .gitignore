@@ -46,6 +46,7 @@ logs/
 
 # Data files
 data/*.json
+data/*.db
 !data/.gitkeep
 
 # Testing

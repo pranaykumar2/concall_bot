@@ -734,6 +734,10 @@ class ConcallResultsBot:
                         caption=None
                     )
                     
+                    # Wait to avoid Telegram rate limits/connection issues between image and document
+                    if sent_img:
+                        await asyncio.sleep(2)
+                    
                     sent_pdf = False
                     if result_link:
                         # Download PDF (Streamed)

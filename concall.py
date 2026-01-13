@@ -499,29 +499,7 @@ class ConcallResultsBot:
         companies.sort(key=lambda x: x['dateTime'])
         return companies
     
-    async def save_to_json(self, data: Dict, companies: List[str]) -> Path:
-        """
-        Save fetched data to JSON file for archival (Async)
-        """
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        filename = config.DATA_DIR / f'results_{timestamp}.json'
-        
-        output_data = {
-            "timestamp": timestamp,
-            "datetime": datetime.now().isoformat(),
-            "companies_count": len(companies),
-            "companies": companies,
-            "raw_data": data
-        }
-        
-        try:
-            async with aiofiles.open(filename, 'w', encoding='utf-8') as f:
-                await f.write(json.dumps(output_data, indent=2, ensure_ascii=False))
-            logger.info(f"Data saved to {filename}")
-            return filename
-        except Exception as e:
-            logger.error(f"Failed to save data to JSON: {e}")
-            raise
+
     
     def format_telegram_message(self, companies: List[str]) -> str:
         """Format the Telegram message with company names"""
@@ -707,10 +685,10 @@ class ConcallResultsBot:
             period_info = "Results"
             
         # Clean filename
-        safe_company = re.sub(r'[^\w\s-]', '', company_name).strip().replace(' ', '_')
-        safe_period = re.sub(r'[^\w\s-]', '', period_info).strip().replace(' ', '_')
+        safe_company = re.sub(r'[^\w\s-]', '', company_name).strip()
+        safe_period = re.sub(r'[^\w\s-]', '', period_info).strip()
         
-        return f"{safe_company}_{result_type}_{safe_period}.pdf"
+        return f"{safe_company} {result_type} {safe_period}.pdf"
 
     async def run_job(self):
         """Execute the bot job safely"""
@@ -753,7 +731,7 @@ class ConcallResultsBot:
                     # Send Image
                     sent_img = await self.send_telegram_image(
                         image_bytes, 
-                        caption=f"**{company_name}**\n{description}"
+                        caption=None
                     )
                     
                     sent_pdf = False
@@ -782,8 +760,9 @@ class ConcallResultsBot:
                     continue
             
             # Save raw data for archival
-            company_names = [c['name'] for c in new_companies]
-            await self.save_to_json(data, company_names)
+            # JSON archival removed in favor of SQLite
+            # company_names = [c['name'] for c in new_companies]
+            # await self.save_to_json(data, company_names)
             
         except Exception as e:
             logger.error(f"Job execution failed: {e}")

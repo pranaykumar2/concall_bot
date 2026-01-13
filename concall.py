@@ -5,10 +5,11 @@ Fetches quarterly results from Concall API and sends via Telegram
 import asyncio
 import json
 import logging
+import re
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 import pandas as pd
 import pytz
@@ -33,6 +34,156 @@ from colorama import Fore
 
 # Setup Logger
 logger = setup_logger(__name__, config.LOG_DIR)
+
+
+def normalize_company_name(name: str) -> str:
+    """
+    Normalize company name for fuzzy matching.
+    Removes common suffixes, special characters, and standardizes format.
+    
+    Args:
+        name: Company name to normalize
+        
+    Returns:
+        Normalized company name for matching
+    """
+    if not name:
+        return ""
+    
+    # Convert to lowercase
+    normalized = name.lower().strip()
+    
+    # Expand common abbreviations before normalization
+    abbreviations = {
+        r'\bgen\.?\b': 'general',
+        r'\bintl\.?\b': 'international',
+        r'\bintn\'?l\.?\b': 'international',
+        r'\bpvt\.?\b': 'private',
+        r'\bltd\.?\b': 'limited',
+        r'\bcorp\.?\b': 'corporation',
+        r'\binc\.?\b': 'incorporated',
+        r'\bco\.?\b': 'company',
+        r'\bmfg\.?\b': 'manufacturing',
+        r'\bind\.?\b': 'india',
+        r'\bpharm\.?\b': 'pharmaceutical',
+        r'\btech\.?\b': 'technology',
+        r'\btelec?o?m\.?\b': 'telecommunication',
+        r'\beng\.?\b': 'engineering',
+        r'\bdev\.?\b': 'development',
+        r'\binfra\.?\b': 'infrastructure',
+        r'\bpetro\.?\b': 'petroleum',
+        r'\bauto\.?\b': 'automotive',
+        r'\bsvc?s?\.?\b': 'services',
+    }
+    
+    for abbr, full in abbreviations.items():
+        normalized = re.sub(abbr, full, normalized, flags=re.IGNORECASE)
+    
+    # Remove common company suffixes
+    suffixes = [
+        r'\s+ltd\.?$', r'\s+limited$', r'\s+inc\.?$', r'\s+incorporated$',
+        r'\s+corp\.?$', r'\s+corporation$', r'\s+company$', r'\s+co\.?$',
+        r'\s+pvt\.?$', r'\s+private$', r'\s+public$', r'\s+plc$'
+    ]
+    for suffix in suffixes:
+        normalized = re.sub(suffix, '', normalized, flags=re.IGNORECASE)
+    
+    # Remove special characters but keep spaces
+    normalized = re.sub(r'[^a-z0-9\s]', '', normalized)
+    
+    # Remove extra spaces
+    normalized = re.sub(r'\s+', ' ', normalized).strip()
+    
+    return normalized
+
+
+def fuzzy_match_company(api_name: str, nifty_companies: Set[str], 
+                         company_map: Dict[str, str], threshold: float = 0.8) -> Optional[str]:
+    """
+    Match API company name with Nifty 500 companies using fuzzy matching.
+    
+    Strategy:
+    1. Exact match (case-insensitive)
+    2. Normalized name match
+    3. Substring match (API name is contained in Nifty name)
+    4. Token-based match (all words from API name appear in Nifty name)
+    
+    Args:
+        api_name: Company name from API
+        nifty_companies: Set of Nifty 500 company names
+        company_map: Dict mapping normalized names to original names
+        threshold: Minimum similarity threshold (not used in current implementation)
+        
+    Returns:
+        Matched company name or None
+    """
+    if not api_name:
+        return None
+    
+    # Strategy 1: Exact match (case-insensitive)
+    for company in nifty_companies:
+        if api_name.lower() == company.lower():
+            logger.debug(f"Exact match: '{api_name}' -> '{company}'")
+            return company
+    
+    # Normalize the API name
+    api_normalized = normalize_company_name(api_name)
+    
+    # Strategy 2: Normalized exact match
+    if api_normalized in company_map:
+        matched = company_map[api_normalized]
+        logger.debug(f"Normalized match: '{api_name}' -> '{matched}'")
+        return matched
+    
+    # Strategy 3: Substring match (API name contained in Nifty name)
+    api_lower = api_name.lower()
+    for company in nifty_companies:
+        company_lower = company.lower()
+        # Check if API name is a substring of Nifty name (common for abbreviations)
+        if api_lower in company_lower:
+            # Additional validation: ensure significant overlap
+            if len(api_lower) >= 5:
+                logger.debug(f"Substring match: '{api_name}' -> '{company}'")
+                return company
+        # Check if Nifty name is substring of API name (rare but possible)
+        elif company_lower in api_lower and len(company_lower) >= 5:
+            logger.debug(f"Reverse substring match: '{api_name}' -> '{company}'")
+            return company
+    
+    # Strategy 4: Token-based match (all significant words match)
+    api_tokens = set(api_normalized.split())
+    # Filter out common words that don't help matching
+    stop_words = {'and', 'the', 'of', 'in', 'for', 'with', 'on', 'at', 'to', 'a', 'an'}
+    api_tokens = api_tokens - stop_words
+    
+    if not api_tokens:
+        return None
+    
+    best_match = None
+    best_score = 0
+    
+    for company in nifty_companies:
+        company_normalized = normalize_company_name(company)
+        company_tokens = set(company_normalized.split()) - stop_words
+        
+        if not company_tokens:
+            continue
+        
+        # Calculate token overlap
+        common_tokens = api_tokens & company_tokens
+        if len(common_tokens) > 0:
+            # Score based on proportion of API tokens matched
+            score = len(common_tokens) / len(api_tokens)
+            
+            # Require at least 80% of API tokens to match
+            if score >= threshold and score > best_score:
+                best_score = score
+                best_match = company
+    
+    if best_match:
+        logger.debug(f"Token match ({best_score:.2%}): '{api_name}' -> '{best_match}'")
+    
+    return best_match
 
 
 class ConcallResultsBot:
@@ -84,7 +235,7 @@ class ConcallResultsBot:
                 logger.warning(f"Failed to prime session cookies: {e}")
 
             self.sent_companies = self.load_sent_companies()
-            self.nifty_500_companies = self.load_nifty_500()
+            self.nifty_500_companies, self.nifty_500_normalized_map, self.nifty_500_symbol_map = self.load_nifty_500()
             self.image_generator = EnhancedNewsImageGenerator(
                 show_brand=False,
                 show_mesh_grid_background=True,
@@ -94,28 +245,47 @@ class ConcallResultsBot:
                 "Status": "Initialized",
                 "Mode": "Sequential Flow",
                 "Sent Cache": f"{len(self.sent_companies.get('companies', []))} companies",
-                "Nifty 500": f"{len(self.nifty_500_companies)} loaded"
+                "Nifty 500": f"{len(self.nifty_500_companies)} loaded",
+                "Fuzzy Match": "Enabled"
             }, color=Fore.CYAN)
         except Exception as e:
             logger.error(f"Failed to initialize bot: {e}")
             raise
     
-    def load_nifty_500(self) -> Set[str]:
+    def load_nifty_500(self) -> Tuple[Set[str], Dict[str, str], Dict[str, str]]:
         """
-        Load company names from Nifty 500 CSV file
+        Load company names from Nifty 500 CSV file with multiple lookup strategies.
         
         Returns:
-            Set of company names in Nifty 500
+            Tuple of:
+            - Set of company names in Nifty 500
+            - Dict mapping normalized names to original names
+            - Dict mapping symbols to company names
         """
         try:
             df = pd.read_csv(config.NIFTY_500_CSV)
-            # Extract company names and convert to a set for faster lookup
+            
+            # Extract company names
             companies = set(df['Company Name'].str.strip().tolist())
-            logger.info(f"Loaded {len(companies)} companies from Nifty 500")
-            return companies
+            
+            # Create normalized name mapping
+            normalized_map = {}
+            for company in companies:
+                normalized = normalize_company_name(company)
+                normalized_map[normalized] = company
+            
+            # Create symbol to name mapping
+            symbol_map = {}
+            for _, row in df.iterrows():
+                symbol = str(row['Symbol']).strip()
+                company_name = str(row['Company Name']).strip()
+                symbol_map[symbol] = company_name
+            
+            logger.info(f"Loaded {len(companies)} companies from Nifty 500 with {len(normalized_map)} normalized mappings")
+            return companies, normalized_map, symbol_map
         except Exception as e:
             logger.error(f"Error loading Nifty 500 CSV: {e}")
-            return set()
+            return set(), {}, {}
     
     def load_sent_companies(self) -> Dict[str, List[str]]:
         """
@@ -297,16 +467,38 @@ class ConcallResultsBot:
                         logger.debug(f"Skipping {company_name} - Date '{date_time}' is not today")
                         continue
                     
-                    # Filter 2: Check if company is in Nifty 500 (COMMENTED OUT)
+                    # Filter 2: Check if company is in Nifty 500 using fuzzy matching
                     # Try matching both companyName and assentName
-                    # is_in_nifty_500 = (
-                    #     company_name in self.nifty_500_companies or 
-                    #     assent_name in self.nifty_500_companies
-                    # )
-                    # 
-                    # if not is_in_nifty_500:
-                    #     logger.debug(f"Skipping {company_name} ({assent_name}) - Not in Nifty 500")
-                    #     continue
+                    matched_company = None
+                    
+                    # Try exact match first
+                    if company_name in self.nifty_500_companies:
+                        matched_company = company_name
+                    elif assent_name in self.nifty_500_companies:
+                        matched_company = assent_name
+                    else:
+                        # Try fuzzy matching on company name
+                        matched_company = fuzzy_match_company(
+                            company_name, 
+                            self.nifty_500_companies, 
+                            self.nifty_500_normalized_map
+                        )
+                        
+                        # If no match, try assent name
+                        if not matched_company and assent_name:
+                            matched_company = fuzzy_match_company(
+                                assent_name,
+                                self.nifty_500_companies,
+                                self.nifty_500_normalized_map
+                            )
+                    
+                    if not matched_company:
+                        logger.debug(f"Skipping {company_name} ({assent_name}) - Not in Nifty 500 (fuzzy match failed)")
+                        continue
+                    
+                    # Log successful match if fuzzy matching was used
+                    if matched_company != company_name and matched_company != assent_name:
+                        logger.info(f"Fuzzy matched: API '{company_name}' -> Nifty 500 '{matched_company}'")
                     
                     # Add company if it meets criteria and not already in list
                     # Logic changed: Check if (name, description) combination exists, not just name

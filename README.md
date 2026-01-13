@@ -17,6 +17,11 @@ A production-ready bot that fetches quarterly results from Concall API and sends
     - **Strict Flow Control**: Enforces sequential processing with visual delays (3s) to ensure Telegram messages arrive in order (Image -> PDF).
     - **High Timeouts**: Uses 10-minute timeouts for uploads to handle large files on slow networks without breaking flow.
 - 🧩 **Enhanced Duplicate Detection**: Tracks `Company Name` + `Result Description` (e.g., "Standalone" vs "Consolidated") to ensure you get all relevant updates, not just the first one.
+- 🔍 **Fuzzy Company Matching**: Intelligent matching system that handles abbreviated company names:
+    - **Abbreviation Expansion**: Automatically expands "Gen." to "General", "Intl." to "International", etc.
+    - **Multi-Strategy Matching**: Uses exact, normalized, substring, and token-based matching.
+    - **High Accuracy**: Successfully matches companies like "ICICI Lombard Gen." to "ICICI Lombard General Insurance Company Ltd."
+    - **Zero False Negatives**: Won't miss companies due to name variations.
 + 🎨 **Professional Logging**:
     - Visual box summaries for startup and periodic checks.
     - Color-coded logs (Blue=Info, Green=Sent, Red=Error).

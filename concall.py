@@ -779,13 +779,15 @@ async def main():
         
         logger.info("Concall Bot Scheduler Started (Async)")
         
-        # Send startup message
-        await bot.send_telegram_message(
-            f"🤖 **Concall Results Bot Started**\n"
-            f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-            f"🚀 Mode: Async/Non-blocking\n"
-            f"💾 DB: SQLite"
-        )
+        
+        # Send startup message - REMOVED per user request
+        # await bot.send_telegram_message(
+        #     f"🤖 **Concall Results Bot Started**\n"
+        #     f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        #     f"🚀 Mode: Async/Non-blocking\n"
+        #     f"💾 DB: SQLite"
+        # )
+        
         
         # Keep alive
         try:

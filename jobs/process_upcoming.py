@@ -12,7 +12,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
 from services.upcoming_impact_generator import UpcomingImpactGenerator
 from telegram import Bot
-from telegram.error import TimedOut, NetworkError
+import json
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -171,18 +171,60 @@ async def fetch_and_process_upcoming():
                     media_group.append(InputMediaPhoto(media=img_io, caption=caption, parse_mode='HTML'))
                 
                 try:
-                    # Increased timeout for bulk uploads
-                    await bot.send_media_group(
-                        chat_id=config.TELEGRAM_CHANNEL_ID, 
-                        media=media_group,
-                        read_timeout=120,
-                        write_timeout=120,
-                        connect_timeout=60
-                    )
-                    logger.info("✅ Telegram album sent successfully!")
-                    sent_success = True
-                except (TimedOut, NetworkError) as e:
-                    logger.error(f"⚠️ Bulk send failed ({e}). Switching to individual send fallback...")
+                    # Manual HTTPX implementation as per user request
+                    # Construct media array for JSON payload
+                    media_payload = []
+                    files_payload = []
+                    
+                    for idx, img_io in enumerate(generated_images):
+                        img_io.seek(0)
+                        file_key = f"photo{idx}"
+                        
+                        media_item = {
+                            "type": "photo",
+                            "media": f"attach://{file_key}"
+                        }
+                        
+                        # Add caption to the first item
+                        if idx == 0:
+                            caption_text = (
+                                f"<b>Upcoming Results for {display_date}</b>\n"
+                                f"Full List of companies with detailed reporting will be shared tomorrow.\n\n"
+                                f"<b>Stay Tuned, </b>Thank You!"
+                            )
+                            media_item["caption"] = caption_text
+                            media_item["parse_mode"] = "HTML"
+                            
+                        media_payload.append(media_item)
+                        
+                        # Add to files list for multipart upload
+                        # (param_name, (filename, file_content, content_type))
+                        files_payload.append(
+                            (file_key, (f"image{idx}.png", img_io.read(), "image/png"))
+                        )
+
+                    # Prepare the full payload
+                    data_payload = {
+                        "chat_id": config.TELEGRAM_CHANNEL_ID,
+                        "media": json.dumps(media_payload)
+                    }
+
+                    # Send request using httpx
+                    api_url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMediaGroup"
+                    
+                    async with httpx.AsyncClient() as client:
+                        resp = await client.post(
+                            api_url, 
+                            data=data_payload, 
+                            files=files_payload, 
+                            timeout=120.0
+                        )
+                        resp.raise_for_status()
+                        logger.info("✅ Telegram album sent successfully (via direct API)!")
+                        sent_success = True
+
+                except Exception as e:
+                    logger.error(f"⚠️ Direct API bulk send failed ({e}). Switching to individual send fallback...")
                     
                     # Fallback: Send Individually
                     for idx, img_io in enumerate(generated_images):
@@ -196,6 +238,7 @@ async def fetch_and_process_upcoming():
                                     f"#Earnings #StockMarket"
                                 )
                             
+                            # Using library for single send fallback as it is simple
                             await bot.send_photo(
                                 chat_id=config.TELEGRAM_CHANNEL_ID,
                                 photo=img_io,
@@ -207,7 +250,7 @@ async def fetch_and_process_upcoming():
                         except Exception as inner_e:
                              logger.error(f"❌ Fallback failed for image {idx+1}: {inner_e}")
                     
-                    sent_success = True # Marked as success to trigger cleanup since we attempted fallback
+                    sent_success = True # Marked as success to trigger cleanup logic
                 
             else:
                 # Single Image

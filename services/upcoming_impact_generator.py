@@ -36,6 +36,16 @@ class UpcomingImpactGenerator(EnhancedNewsImageGenerator):
         self.col_fincode_w = 200
         self.col_comp_w = self.width - self.col_idx_w - self.col_fincode_w - 100 # Remaining
 
+    def get_font(self, family, style, size):
+        """Helper to safely load a specific configured font."""
+        try:
+            font_path = self.download_google_font(family, style)
+            if font_path:
+                return ImageFont.truetype(font_path, size)
+        except Exception as e:
+            logger.warning(f"Failed to load specific font {family} {style}: {e}")
+        return self.load_system_font(size)
+
     def generate_upcoming_image(self, date_str: str, companies: List[Dict[str, str]], page_num: int = 1, total_pages: int = 1) -> BytesIO:
         """
         Generates the upcoming results image (1000x Editorial Edition).
@@ -69,7 +79,8 @@ class UpcomingImpactGenerator(EnhancedNewsImageGenerator):
         # --- HEADER SECTION ---
         # "UPCOMING RESULTS" - Spaced out, Elegant, Centered
         header_text = "UPCOMING RESULTS"
-        header_font = self.load_system_font(48) # Medium size, high tracking if possible (simulated by font choice)
+        # header_font = self.load_system_font(48) # Medium size, high tracking if possible (simulated by font choice)
+        header_font = self.get_font(config.UPCOMING_FONT_TITLE_FAMILY, config.UPCOMING_FONT_TITLE_STYLE, 48)
         
         # Center the header
         bbox = header_font.getbbox(header_text)
@@ -92,7 +103,8 @@ class UpcomingImpactGenerator(EnhancedNewsImageGenerator):
         table_start_y = 300
         
         # Headers
-        meta_font = self.load_system_font(24)
+        # meta_font = self.load_system_font(24)
+        meta_font = self.get_font(config.UPCOMING_FONT_TABLE_HEADER_FAMILY, config.UPCOMING_FONT_TABLE_HEADER_STYLE, 24)
         draw.text((col_1_x, table_start_y), "NO.", font=meta_font, fill=c_text_meta)
         draw.text((col_2_x, table_start_y), "FIN CODE", font=meta_font, fill=c_text_meta)
         draw.text((col_3_x, table_start_y), "COMPANY", font=meta_font, fill=c_text_meta)
@@ -104,9 +116,17 @@ class UpcomingImpactGenerator(EnhancedNewsImageGenerator):
         row_start_y = table_start_y + 80
         row_height = 140 # Generous spacing
         
-        font_index = self.load_system_font(50) # Big Index
-        font_code = self.load_system_font(36)  # Monospace-ish
-        font_comp = self.load_system_font(42)  # Clean Sans
+        # font_index = self.load_system_font(50) # Big Index
+        # font_code = self.load_system_font(36)  # Monospace-ish
+        # font_comp = self.load_system_font(42)  # Clean Sans
+        
+        # font_index = self.get_font(config.UPCOMING_FONT_TITLE_FAMILY, config.UPCOMING_FONT_TITLE_STYLE, 50)
+        # font_code = self.get_font(config.UPCOMING_FONT_TAG_FAMILY, config.UPCOMING_FONT_TAG_STYLE, 36)
+        # font_comp = self.get_font(config.UPCOMING_FONT_BODY_FAMILY, config.UPCOMING_FONT_BODY_STYLE, 42)
+
+        font_index = self.get_font(config.UPCOMING_FONT_INDEX_FAMILY, config.UPCOMING_FONT_INDEX_STYLE, 50)
+        font_code = self.get_font(config.UPCOMING_FONT_FINCODE_FAMILY, config.UPCOMING_FONT_FINCODE_STYLE, 36)
+        font_comp = self.get_font(config.UPCOMING_FONT_COMPANY_FAMILY, config.UPCOMING_FONT_COMPANY_STYLE, 42)
         
         start_idx = (page_num - 1) * 6 + 1
         

@@ -8,3 +8,4 @@ httpx
 Pillow
 aiofiles
 colorama
+httpx[http2]

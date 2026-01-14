@@ -12,6 +12,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
 from services.upcoming_impact_generator import UpcomingImpactGenerator
 from telegram import Bot
+from telegram.error import TimedOut, NetworkError
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -169,9 +170,44 @@ async def fetch_and_process_upcoming():
                         )
                     media_group.append(InputMediaPhoto(media=img_io, caption=caption, parse_mode='HTML'))
                 
-                await bot.send_media_group(chat_id=config.TELEGRAM_CHANNEL_ID, media=media_group)
-                logger.info("✅ Telegram album sent successfully!")
-                sent_success = True
+                try:
+                    # Increased timeout for bulk uploads
+                    await bot.send_media_group(
+                        chat_id=config.TELEGRAM_CHANNEL_ID, 
+                        media=media_group,
+                        read_timeout=120,
+                        write_timeout=120,
+                        connect_timeout=60
+                    )
+                    logger.info("✅ Telegram album sent successfully!")
+                    sent_success = True
+                except (TimedOut, NetworkError) as e:
+                    logger.error(f"⚠️ Bulk send failed ({e}). Switching to individual send fallback...")
+                    
+                    # Fallback: Send Individually
+                    for idx, img_io in enumerate(generated_images):
+                        try:
+                            img_io.seek(0)
+                            caption = None
+                            if idx == 0:
+                                caption = (
+                                    f"📅 <b>Upcoming Results for {display_date}</b>\n\n"
+                                    f"Companies reporting earnings tomorrow.\n"
+                                    f"#Earnings #StockMarket"
+                                )
+                            
+                            await bot.send_photo(
+                                chat_id=config.TELEGRAM_CHANNEL_ID,
+                                photo=img_io,
+                                caption=caption,
+                                parse_mode='HTML',
+                                read_timeout=60
+                            )
+                            logger.info(f"✅ Fallback: Sent image {idx+1}/{len(generated_images)}")
+                        except Exception as inner_e:
+                             logger.error(f"❌ Fallback failed for image {idx+1}: {inner_e}")
+                    
+                    sent_success = True # Marked as success to trigger cleanup since we attempted fallback
                 
             else:
                 # Single Image

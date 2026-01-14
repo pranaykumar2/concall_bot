@@ -149,7 +149,7 @@ class UpcomingImpactGenerator(EnhancedNewsImageGenerator):
         footer_y = height - 100
         
         # Branding
-        draw.text((margin_x, footer_y), "CONCALL.IN", font=meta_font, fill=c_text_main)
+        draw.text((margin_x, footer_y), "", font=meta_font, fill=c_text_main)
         
         # Page Indicator (Circle or simply text)
         page_str = f"{page_num} / {total_pages}"

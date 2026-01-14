@@ -62,25 +62,50 @@ def normalize_company_name(name: str) -> str:
     
     # Expand common abbreviations before normalization
     abbreviations = {
+        r'\bmngt\.?\b': 'management',
         r'\bgen\.?\b': 'general',
         r'\bintl\.?\b': 'international',
         r'\bintn\'?l\.?\b': 'international',
         r'\bpvt\.?\b': 'private',
         r'\bltd\.?\b': 'limited',
         r'\bcorp\.?\b': 'corporation',
+        r'\bcorpn\.?\b': 'corporation',
         r'\binc\.?\b': 'incorporated',
         r'\bco\.?\b': 'company',
         r'\bmfg\.?\b': 'manufacturing',
-        r'\bind\.?\b': 'india',
-        r'\bpharm\.?\b': 'pharmaceutical',
+        r'\bind\.?\b': 'industries',
+        r'\bpharm\.?\b': 'pharmaceutical',  # Fixed: singular to match standard usage often (or handle fuzzy)
+        r'\bpharma\.?\b': 'pharmaceutical',
         r'\btech\.?\b': 'technology',
-        r'\btelec?o?m\.?\b': 'telecommunication',
+        r'\btelec?o?m\.?\b': 'telecommunications',
         r'\beng\.?\b': 'engineering',
         r'\bdev\.?\b': 'development',
         r'\binfra\.?\b': 'infrastructure',
-        r'\bpetro\.?\b': 'petroleum',
+        # r'\bpetro\.?\b': 'petroleum', # Removed: Conflict with Petronet, use substring match
         r'\bauto\.?\b': 'automotive',
         r'\bsvc?s?\.?\b': 'services',
+        r'\badmin\.?\b': 'administration',
+        r'\bagri\.?\b': 'agriculture',
+        r'\bassoc\.?\b': 'associates',
+        r'\bchem\.?\b': 'chemicals',
+        # r'\bcons\.?\b': 'construction', # Removed: Ambiguous with Consultancy, Consumer
+        r'\bcomm\.?\b': 'communications',
+        r'\bfert\.?\b': 'fertilizers',
+        r'\bguj\.?\b': 'gujarat',
+        r'\bdist\.?\b': 'distribution',
+        r'\belec\.?\b': 'electrical',
+        r'\bent\.?\b': 'enterprises',
+        r'\bfin\.?\b': 'financial',
+        r'\bhldg\.?\b': 'holdings',
+        r'\binvest\.?\b': 'investment',
+        r'\blab\.?\b': 'laboratories',
+        r'\bmat\.?\b': 'materials',
+        r'\bprod\.?\b': 'products',
+        r'\bsoln\.?\b': 'solutions',
+        r'\bsyst\.?\b': 'systems',
+        r'\btrans\.?\b': 'transport',
+        r'\bamc\b': 'asset management company',
+        r'\bins\.?\b': 'insurance'
     }
     
     for abbr, full in abbreviations.items():
@@ -136,20 +161,21 @@ def fuzzy_match_company(api_name: str, nifty_companies: Set[str],
         logger.debug(f"Normalized match: '{api_name}' -> '{matched}'")
         return matched
     
-    # Strategy 3: Substring match (API name contained in Nifty name)
-    api_lower = api_name.lower()
-    for company in nifty_companies:
-        company_lower = company.lower()
-        # Check if API name is a substring of Nifty name (common for abbreviations)
-        if api_lower in company_lower:
-            # Additional validation: ensure significant overlap
-            if len(api_lower) >= 5:
-                logger.debug(f"Substring match: '{api_name}' -> '{company}'")
-                return company
-        # Check if Nifty name is substring of API name (rare but possible)
-        elif company_lower in api_lower and len(company_lower) >= 5:
-            logger.debug(f"Reverse substring match: '{api_name}' -> '{company}'")
-            return company
+    # Strategy 3: Normalized Substring match (Improved)
+    # Use normalized API name against normalized company names
+    for normalized_name, original_name in company_map.items():
+        # Check if API normalized name is in Company normalized name
+        if api_normalized in normalized_name:
+            if len(api_normalized) >= 5:
+                logger.debug(f"Normalized substring match: '{api_name}' -> '{original_name}'")
+                return original_name
+        
+        # Check if Company normalized name is in API normalized name
+        elif normalized_name in api_normalized:
+            if len(normalized_name) >= 5:
+                # Be careful with short company names being substrings of long API descriptions
+                logger.debug(f"Reverse normalized substring match: '{api_name}' -> '{original_name}'")
+                return original_name
     
     # Strategy 4: Token-based match (all significant words match)
     api_tokens = set(api_normalized.split())

@@ -120,6 +120,7 @@ async def fetch_and_process_upcoming():
     
     # Process chunks
     generated_images = []
+    saved_files = [] # Track local files for cleanup
     
     try:
         for i in range(total_pages):
@@ -137,8 +138,10 @@ async def fetch_and_process_upcoming():
             generated_images.append(image_io)
             
             # Save local copy debug
-            with open(f"upcoming_{target_date_iso_prefix}_p{page_num}.png", "wb") as f:
+            filename = f"upcoming_{target_date_iso_prefix}_p{page_num}.png"
+            with open(filename, "wb") as f:
                 f.write(image_io.read())
+            saved_files.append(filename)
             image_io.seek(0)
 
     except Exception as e:
@@ -150,6 +153,7 @@ async def fetch_and_process_upcoming():
     if config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_CHANNEL_ID:
         try:
             bot = Bot(token=config.TELEGRAM_BOT_TOKEN)
+            sent_success = False
             
             # Create Media Group (Album) if multiple pages
             if len(generated_images) > 1:
@@ -160,13 +164,14 @@ async def fetch_and_process_upcoming():
                     if idx == 0:
                         caption = (
                             f"<b>Upcoming Results for {display_date}</b>\n"
-                            f"Full List of companies reporting tomorrow.\n\n"
+                            f"Full List of companies with detailed reporting  will be shared tomorrow.\n\n"
                             f"<b>Stay Tuned, </b>Thank You!"
                         )
                     media_group.append(InputMediaPhoto(media=img_io, caption=caption, parse_mode='HTML'))
                 
                 await bot.send_media_group(chat_id=config.TELEGRAM_CHANNEL_ID, media=media_group)
                 logger.info("✅ Telegram album sent successfully!")
+                sent_success = True
                 
             else:
                 # Single Image
@@ -182,6 +187,17 @@ async def fetch_and_process_upcoming():
                     parse_mode='HTML'
                 )
                 logger.info("✅ Telegram photo sent successfully!")
+                sent_success = True
+
+            # Cleanup local files if sent successfully
+            if sent_success:
+                for filename in saved_files:
+                    try:
+                        if os.path.exists(filename):
+                            os.remove(filename)
+                            logger.info(f"🗑️ Removed temp file: {filename}")
+                    except Exception as e:
+                        logger.error(f"⚠️ Failed to remove {filename}: {e}")
 
         except Exception as e:
             logger.error(f"❌ Telegram send failed: {e}")

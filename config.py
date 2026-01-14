@@ -28,6 +28,7 @@ TELEGRAM_CHANNEL_ID = os.getenv('TELEGRAM_CHANNEL_ID')
 
 # API Endpoint
 API_URL = "https://api.concall.in/leap/fetch/liveResults?page=0&size=40&sector=All&marketCap=All"
+UPCOMING_RESULTS_API_URL = "https://api.concall.in/leap/fetch/upcomingResults"
 
 # API Headers
 API_HEADERS = {

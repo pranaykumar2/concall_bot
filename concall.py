@@ -807,11 +807,12 @@ async def main():
         
         # Setup scheduler
         scheduler = AsyncIOScheduler()
-        scheduler.add_job(bot.run_job, CronTrigger(minute='*/2'))  # Check every 2 minutes
+        scheduler.add_job(bot.run_job, CronTrigger(minute=f'*/{config.CHECK_INTERVAL_MINUTES}'))  # Check every N minutes
         
-        # Schedule Upcoming Results for 5:30 PM (17:30) IST
+        # Schedule Upcoming Results
         # fetch_and_process_upcoming handles its own "Tomorrow" logic
-        scheduler.add_job(fetch_and_process_upcoming, CronTrigger(hour=17, minute=30, timezone=config.TIMEZONE))
+        upcoming_hour, upcoming_minute = map(int, config.UPCOMING_SCHEDULE_TIME.split(':'))
+        scheduler.add_job(fetch_and_process_upcoming, CronTrigger(hour=upcoming_hour, minute=upcoming_minute, timezone=config.TIMEZONE))
         
         scheduler.start()
         

@@ -45,6 +45,7 @@ NIFTY_500_CSV = BASE_DIR / 'nifty_500.csv'
 SCHEDULE_TIME = os.getenv('SCHEDULE_TIME', '07:30')
 TIMEZONE = os.getenv('TIMEZONE', 'Asia/Kolkata')
 CHECK_INTERVAL_MINUTES = int(os.getenv('CHECK_INTERVAL_MINUTES', '5'))
+UPCOMING_SCHEDULE_TIME = os.getenv('UPCOMING_SCHEDULE_TIME', '17:30')
 
 # Retry Configuration
 MAX_RETRIES = int(os.getenv('MAX_RETRIES', '5'))

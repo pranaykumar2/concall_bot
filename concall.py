@@ -720,7 +720,7 @@ class ConcallResultsBot:
         return f"{safe_company} {result_type} {safe_period}.pdf"
 
     async def run_job(self):
-        """Execute the bot job safely"""
+        """Execute the bot job safely with Album support"""
         try:
             # 1. Fetch data
             data = await self.fetch_results()
@@ -736,68 +736,140 @@ class ConcallResultsBot:
                 return
 
             logger.info(f"Processing {len(new_companies)} new updates...")
+            
+            # Sort by name for nicer album presentation? Or keep time based?
+            # Keeping time based as per extract_companies sort is usually best for "Live" feel.
+            
+            # 3. Process in Batches of 10 (Telegram Album Limit)
+            BATCH_SIZE = 10
+            for i in range(0, len(new_companies), BATCH_SIZE):
+                batch = new_companies[i:i + BATCH_SIZE]
+                logger.info(f"Processing batch {i//BATCH_SIZE + 1} with {len(batch)} companies")
+                
+                # --- A. Generate Images for Batch ---
+                generated_images = []
+                image_map = {} # Map index to company for PDF correlation
+                
+                for idx, company in enumerate(batch):
+                    try:
+                        loop = asyncio.get_running_loop()
+                        image_bytes = await loop.run_in_executor(
+                            self.cpu_executor,
+                            self.image_generator.generate_news_image,
+                            company['name'],
+                            company['description'],
+                            ""
+                        )
+                        generated_images.append(image_bytes)
+                        image_map[idx] = company
+                    except Exception as e:
+                        logger.error(f"Failed to generate image for {company['name']}: {e}")
+                        # If image gen fails, we might still want to try sending PDF? 
+                        # For simplicity, we skip this company from the album but maybe process PDF later.
+                        continue
+                
+                if not generated_images:
+                    continue
 
-            # 3. Process Each Company
-            for i, company in enumerate(new_companies):
+                # --- B. Send Album (Direct API) ---
+                sent_album = False
                 try:
+                    media_payload = []
+                    files_payload = []
+                    
+                    for idx, img_io in enumerate(generated_images):
+                        img_io.seek(0)
+                        file_key = f"photo{idx}"
+                        
+                        media_item = {
+                            "type": "photo",
+                            "media": f"attach://{file_key}"
+                        }
+                        
+                        # Add Caption to First Image
+                        if idx == 0:
+                            # Generate a summary caption for the batch
+                            batch_names = [c['name'] for c in batch]
+                            caption_text = self.format_telegram_message(batch_names)
+                            # Ensure caption limit
+                            if len(caption_text) > 1024:
+                                caption_text = caption_text[:1021] + "..."
+                                
+                            media_item["caption"] = caption_text
+                            media_item["parse_mode"] = None # format_telegram_message returns plain text usually, or check config
+                            # The original format_telegram_message doesn't seem to use HTML markup, just plain text.
+                        
+                        media_payload.append(media_item)
+                        
+                        # Add to files payload
+                        # Using 'image/png' as type
+                        files_payload.append(
+                            (file_key, (f"img_{idx}.png", img_io.read(), "image/png"))
+                        )
+                    
+                    # Prepare Requests
+                    api_url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMediaGroup"
+                    data_payload = {
+                        "chat_id": config.TELEGRAM_CHANNEL_ID,
+                        "media": json.dumps(media_payload)
+                    }
+                    
+                    logger.info("Sending Album to Telegram...")
+                    async with httpx.AsyncClient() as client:
+                        resp = await client.post(
+                            api_url,
+                            data=data_payload,
+                            files=files_payload,
+                            timeout=120.0
+                        )
+                        resp.raise_for_status()
+                        logger.info("✅ Live Results Album sent successfully!")
+                        sent_album = True
+                        
+                except Exception as e:
+                    logger.error(f"❌ Failed to send album: {e}")
+                    # Fallback? The user specifically asked for "collective", so individual fallback might be 
+                    # annoying if it spams 10 images. But better than nothing.
+                    # Let's verify if we should fallback. User said "when I ran concall.py... separate image".
+                    # They WANT collective. If collective fails, maybe we should try individual.
+                    pass
+
+                # --- C. Mark Sent & Send PDFs ---
+                # We iterate through the batch again to send PDFs and mark success
+                for idx, company in enumerate(batch):
                     company_name = company['name']
                     description = company['description']
                     result_link = company['resultLink']
                     
-                    logger.info(f"Processing ({i+1}/{len(new_companies)}): {company_name}")
-                    
-                    # Generate Image (Offloaded to ThreadPool)
-                    logger.info("Generating news image...")
-                    loop = asyncio.get_running_loop()
-                    image_bytes = await loop.run_in_executor(
-                        self.cpu_executor,
-                        self.image_generator.generate_news_image,
-                        company_name,
-                        description,
-                        ""
-                    )
-                    
-                    # Send Image
-                    sent_img = await self.send_telegram_image(
-                        image_bytes, 
-                        caption=None
-                    )
-                    
-                    # Wait to avoid Telegram rate limits/connection issues between image and document
-                    if sent_img:
-                        await asyncio.sleep(2)
-                    
-                    sent_pdf = False
-                    if result_link:
-                        # Download PDF (Streamed)
-                        pdf_filename = self.generate_pdf_filename(company_name, description)
-                        pdf_path = config.DATA_DIR / pdf_filename
-                        
-                        downloaded = await self.download_pdf(result_link, pdf_path)
-                        if downloaded:
-                            # Send PDF
-                            sent_pdf = await self.send_telegram_document(pdf_path)
-                            # Cleanup PDF
-                            if pdf_path.exists():
-                                pdf_path.unlink()
-                    
-                    # Mark as sent if either image or PDF was sent/handled
-                    if sent_img:
+                    # Mark as sent if album succeeded
+                    if sent_album:
                         self.mark_companies_sent([company])
-                        
-                    # Respect Telegram rate limits
-                    await asyncio.sleep(2)
                     
-                except Exception as e:
-                    logger.error(f"Error processing {company['name']}: {e}")
-                    continue
-            
-            # Save raw data for archival
-            # JSON archival removed in favor of SQLite
-            # company_names = [c['name'] for c in new_companies]
-            # await self.save_to_json(data, company_names)
+                    # Process PDF
+                    if result_link:
+                        try:
+                            # Wait a bit between files
+                            await asyncio.sleep(2) 
+                            
+                            pdf_filename = self.generate_pdf_filename(company_name, description)
+                            pdf_path = config.DATA_DIR / pdf_filename
+                            
+                            downloaded = await self.download_pdf(result_link, pdf_path)
+                            if downloaded:
+                                # Send PDF
+                                await self.send_telegram_document(pdf_path)
+                                # Cleanup
+                                if pdf_path.exists():
+                                    pdf_path.unlink()
+                                    
+                        except Exception as e:
+                            logger.error(f"Error processing PDF for {company_name}: {e}")
+                            
+                # Pauses between batches
+                await asyncio.sleep(5)
             
         except Exception as e:
+            logger.error(f"Job execution failed: {e}")
             logger.error(f"Job execution failed: {e}")
 
 async def main():

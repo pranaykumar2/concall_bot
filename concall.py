@@ -763,8 +763,8 @@ class ConcallResultsBot:
                     )
                     
                     # B. Send Image
-                    caption = self.format_telegram_message([company['name']])
-                    if not await self.send_telegram_image(image_bytes, caption):
+                    # caption = self.format_telegram_message([company['name']]) # Removed caption per user request
+                    if not await self.send_telegram_image(image_bytes, caption=None):
                         logger.error(f"Failed to send image for {company['name']}")
                         continue
                     
@@ -774,7 +774,7 @@ class ConcallResultsBot:
                         pdf_path = config.PDF_DOWNLOAD_DIR / pdf_filename
                         
                         if await self.download_pdf(company['resultLink'], pdf_path):
-                            await self.send_telegram_document(pdf_path, caption=company['description'])
+                            await self.send_telegram_document(pdf_path, caption=None)
                             
                             # Cleanup PDF
                             try:

@@ -159,9 +159,9 @@ async def fetch_and_process_upcoming():
                     caption = None
                     if idx == 0:
                         caption = (
-                            f"📅 <b>Upcoming Results for {display_date}</b>\n\n"
-                            f"Full List of companies reporting tomorrow.\n"
-                            f"#Earnings #StockMarket"
+                            f"<b>Upcoming Results for {display_date}</b>\n"
+                            f"Full List of companies reporting tomorrow.\n\n"
+                            f"<b>Stay Tuned, </b>Thank You!"
                         )
                     media_group.append(InputMediaPhoto(media=img_io, caption=caption, parse_mode='HTML'))
                 

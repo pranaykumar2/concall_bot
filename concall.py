@@ -481,31 +481,36 @@ class ConcallResultsBot:
                         continue
                     
                     # Filter: Check if company is in Nifty 500
-                    # NOTE: Filtering disabled as per user request (Send ALL companies)
-                    # matched_company = None
-                    # if company_name in self.nifty_500_companies:
-                    #     matched_company = company_name
-                    # elif assent_name in self.nifty_500_companies:
-                    #     matched_company = assent_name
-                    # else:
-                    #     matched_company = fuzzy_match_company(
-                    #         company_name, 
-                    #         self.nifty_500_companies, 
-                    #         self.nifty_500_normalized_map
-                    #     )
-                    #     if not matched_company and assent_name:
-                    #         matched_company = fuzzy_match_company(
-                    #             assent_name,
-                    #             self.nifty_500_companies,
-                    #             self.nifty_500_normalized_map
-                    #         )
+                    matched_company = None
                     
-                    # if not matched_company:
-                    #     logger.debug(f"Skipping {company_name} - Not in Nifty 500")
-                    #     continue
-                    
-                    # if matched_company != company_name and matched_company != assent_name:
-                    #     logger.info(f"Fuzzy matched: API '{company_name}' -> Nifty 500 '{matched_company}'")
+                    if config.NIFTY_FILTER:
+                        if company_name in self.nifty_500_companies:
+                            matched_company = company_name
+                        elif assent_name in self.nifty_500_companies:
+                            matched_company = assent_name
+                        else:
+                            matched_company = fuzzy_match_company(
+                                company_name, 
+                                self.nifty_500_companies, 
+                                self.nifty_500_normalized_map
+                            )
+                            if not matched_company and assent_name:
+                                matched_company = fuzzy_match_company(
+                                    assent_name,
+                                    self.nifty_500_companies,
+                                    self.nifty_500_normalized_map
+                                )
+                        
+                        if not matched_company:
+                            logger.debug(f"Skipping {company_name} - Not in Nifty 500")
+                            continue
+                        
+                        if matched_company != company_name and matched_company != assent_name:
+                            logger.info(f"Fuzzy matched: API '{company_name}' -> Nifty 500 '{matched_company}'")
+                    else:
+                        # If filtering is disabled, take the API name as is (or maybe prefer assent_name if available?)
+                        # Keeping original logic flow but skipping the check
+                        pass
                     
                     result_description = event.get('resultDescription', '')
                     
@@ -741,133 +746,52 @@ class ConcallResultsBot:
             # Sort by name for nicer album presentation? Or keep time based?
             # Keeping time based as per extract_companies sort is usually best for "Live" feel.
             
-            # 3. Process in Batches of 10 (Telegram Album Limit)
-            BATCH_SIZE = 10
-            for i in range(0, len(new_companies), BATCH_SIZE):
-                batch = new_companies[i:i + BATCH_SIZE]
-                logger.info(f"Processing batch {i//BATCH_SIZE + 1} with {len(batch)} companies")
-                
-                # --- A. Generate Images for Batch ---
-                generated_images = []
-                image_map = {} # Map index to company for PDF correlation
-                
-                for idx, company in enumerate(batch):
-                    try:
-                        loop = asyncio.get_running_loop()
-                        image_bytes = await loop.run_in_executor(
-                            self.cpu_executor,
-                            self.image_generator.generate_news_image,
-                            company['name'],
-                            company['description'],
-                            ""
-                        )
-                        generated_images.append(image_bytes)
-                        image_map[idx] = company
-                    except Exception as e:
-                        logger.error(f"Failed to generate image for {company['name']}: {e}")
-                        # If image gen fails, we might still want to try sending PDF? 
-                        # For simplicity, we skip this company from the album but maybe process PDF later.
-                        continue
-                
-                if not generated_images:
-                    continue
-
-                # --- B. Send Album (Direct API) ---
-                sent_album = False
+            # 3. Process new companies individually
+            for company in new_companies:
                 try:
-                    media_payload = []
-                    files_payload = []
+                    logger.info(f"Processing {company['name']}...")
                     
-                    for idx, img_io in enumerate(generated_images):
-                        img_io.seek(0)
-                        file_key = f"photo{idx}"
-                        
-                        media_item = {
-                            "type": "photo",
-                            "media": f"attach://{file_key}"
-                        }
-                        
-                        # Add Caption to First Image
-                        if idx == 0:
-                            # Generate a summary caption for the batch
-                            batch_names = [c['name'] for c in batch]
-                            caption_text = self.format_telegram_message(batch_names)
-                            # Ensure caption limit
-                            if len(caption_text) > 1024:
-                                caption_text = caption_text[:1021] + "..."
-                                
-                            media_item["caption"] = caption_text
-                            media_item["parse_mode"] = None # format_telegram_message returns plain text usually, or check config
-                            # The original format_telegram_message doesn't seem to use HTML markup, just plain text.
-                        
-                        media_payload.append(media_item)
-                        
-                        # Add to files payload
-                        # Using 'image/png' as type
-                        files_payload.append(
-                            (file_key, (f"img_{idx}.png", img_io.read(), "image/png"))
-                        )
+                    # A. Generate Image
+                    # Offload to thread pool to avoid blocking asyncio loop
+                    loop = asyncio.get_running_loop()
+                    image_bytes = await loop.run_in_executor(
+                        self.cpu_executor,
+                        self.image_generator.generate_news_image,
+                        company['name'],
+                        company['description'],
+                        ""
+                    )
                     
-                    # Prepare Requests
-                    api_url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMediaGroup"
-                    data_payload = {
-                        "chat_id": config.TELEGRAM_CHANNEL_ID,
-                        "media": json.dumps(media_payload)
-                    }
+                    # B. Send Image
+                    caption = self.format_telegram_message([company['name']])
+                    if not await self.send_telegram_image(image_bytes, caption):
+                        logger.error(f"Failed to send image for {company['name']}")
+                        continue
                     
-                    logger.info("Sending Album to Telegram...")
-                    async with httpx.AsyncClient() as client:
-                        resp = await client.post(
-                            api_url,
-                            data=data_payload,
-                            files=files_payload,
-                            timeout=120.0
-                        )
-                        resp.raise_for_status()
-                        logger.info("✅ Live Results Album sent successfully!")
-                        sent_album = True
+                    # C. Download and Send PDF
+                    if company['resultLink']:
+                        pdf_filename = self.generate_pdf_filename(company['name'], company['description'])
+                        pdf_path = config.PDF_DOWNLOAD_DIR / pdf_filename
                         
-                except Exception as e:
-                    logger.error(f"❌ Failed to send album: {e}")
-                    # Fallback? The user specifically asked for "collective", so individual fallback might be 
-                    # annoying if it spams 10 images. But better than nothing.
-                    # Let's verify if we should fallback. User said "when I ran concall.py... separate image".
-                    # They WANT collective. If collective fails, maybe we should try individual.
-                    pass
-
-                # --- C. Mark Sent & Send PDFs ---
-                # We iterate through the batch again to send PDFs and mark success
-                for idx, company in enumerate(batch):
-                    company_name = company['name']
-                    description = company['description']
-                    result_link = company['resultLink']
-                    
-                    # Mark as sent if album succeeded
-                    if sent_album:
-                        self.mark_companies_sent([company])
-                    
-                    # Process PDF
-                    if result_link:
-                        try:
-                            # Wait a bit between files
-                            await asyncio.sleep(2) 
+                        if await self.download_pdf(company['resultLink'], pdf_path):
+                            await self.send_telegram_document(pdf_path, caption=company['description'])
                             
-                            pdf_filename = self.generate_pdf_filename(company_name, description)
-                            pdf_path = config.DATA_DIR / pdf_filename
-                            
-                            downloaded = await self.download_pdf(result_link, pdf_path)
-                            if downloaded:
-                                # Send PDF
-                                await self.send_telegram_document(pdf_path)
-                                # Cleanup
+                            # Cleanup PDF
+                            try:
                                 if pdf_path.exists():
                                     pdf_path.unlink()
-                                    
-                        except Exception as e:
-                            logger.error(f"Error processing PDF for {company_name}: {e}")
-                            
-                # Pauses between batches
-                await asyncio.sleep(5)
+                            except Exception as e:
+                                logger.warning(f"Failed to delete PDF {pdf_path}: {e}")
+                    
+                    # D. Mark as Sent
+                    self.mark_companies_sent([company])
+                    
+                    # Rate limiting
+                    await asyncio.sleep(2)
+                    
+                except Exception as e:
+                    logger.error(f"Error processing {company['name']}: {e}")
+                    continue
             
         except Exception as e:
             logger.error(f"Job execution failed: {e}")

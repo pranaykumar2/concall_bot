@@ -481,30 +481,31 @@ class ConcallResultsBot:
                         continue
                     
                     # Filter: Check if company is in Nifty 500
-                    matched_company = None
-                    if company_name in self.nifty_500_companies:
-                        matched_company = company_name
-                    elif assent_name in self.nifty_500_companies:
-                        matched_company = assent_name
-                    else:
-                        matched_company = fuzzy_match_company(
-                            company_name, 
-                            self.nifty_500_companies, 
-                            self.nifty_500_normalized_map
-                        )
-                        if not matched_company and assent_name:
-                            matched_company = fuzzy_match_company(
-                                assent_name,
-                                self.nifty_500_companies,
-                                self.nifty_500_normalized_map
-                            )
+                    # NOTE: Filtering disabled as per user request (Send ALL companies)
+                    # matched_company = None
+                    # if company_name in self.nifty_500_companies:
+                    #     matched_company = company_name
+                    # elif assent_name in self.nifty_500_companies:
+                    #     matched_company = assent_name
+                    # else:
+                    #     matched_company = fuzzy_match_company(
+                    #         company_name, 
+                    #         self.nifty_500_companies, 
+                    #         self.nifty_500_normalized_map
+                    #     )
+                    #     if not matched_company and assent_name:
+                    #         matched_company = fuzzy_match_company(
+                    #             assent_name,
+                    #             self.nifty_500_companies,
+                    #             self.nifty_500_normalized_map
+                    #         )
                     
-                    if not matched_company:
-                        logger.debug(f"Skipping {company_name} - Not in Nifty 500")
-                        continue
+                    # if not matched_company:
+                    #     logger.debug(f"Skipping {company_name} - Not in Nifty 500")
+                    #     continue
                     
-                    if matched_company != company_name and matched_company != assent_name:
-                        logger.info(f"Fuzzy matched: API '{company_name}' -> Nifty 500 '{matched_company}'")
+                    # if matched_company != company_name and matched_company != assent_name:
+                    #     logger.info(f"Fuzzy matched: API '{company_name}' -> Nifty 500 '{matched_company}'")
                     
                     result_description = event.get('resultDescription', '')
                     

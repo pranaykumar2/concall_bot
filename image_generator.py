@@ -420,7 +420,7 @@ class EnhancedNewsImageGenerator:
         footer_y += 24
 
         # Copyright
-        copyright_text = "© 2025 Balaji Equities Ltd."
+        copyright_text = "© 2026 Balaji Equities Ltd."
         draw.text((margin_left, footer_y), copyright_text, 
                  fill=self.text_tertiary, font=self.font_brand)
 

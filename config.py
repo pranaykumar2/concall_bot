@@ -12,10 +12,12 @@ load_dotenv()
 BASE_DIR = Path(__file__).parent
 DATA_DIR = BASE_DIR / os.getenv('DATA_DIR', 'data')
 LOG_DIR = BASE_DIR / os.getenv('LOG_DIR', 'logs')
+PDF_DOWNLOAD_DIR = BASE_DIR / os.getenv('PDF_DOWNLOAD_DIR', 'pdfs') # Added PDF_DOWNLOAD_DIR
 
 # Create directories if they don't exist
 DATA_DIR.mkdir(exist_ok=True)
 LOG_DIR.mkdir(exist_ok=True)
+PDF_DOWNLOAD_DIR.mkdir(exist_ok=True) # Ensure PDF_DOWNLOAD_DIR is created
 
 # Sent companies tracking file
 SENT_COMPANIES_FILE = DATA_DIR / 'sent_companies_today.json'

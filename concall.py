@@ -36,6 +36,9 @@ from image_generator import EnhancedNewsImageGenerator
 from logger_config import setup_logger, print_box
 from colorama import Fore
 
+# Import Upcoming Results Job
+from jobs.process_upcoming import fetch_and_process_upcoming
+
 # Setup Logger
 logger = setup_logger(__name__, config.LOG_DIR)
 
@@ -779,6 +782,11 @@ async def main():
         # Setup scheduler
         scheduler = AsyncIOScheduler()
         scheduler.add_job(bot.run_job, CronTrigger(minute='*/2'))  # Check every 2 minutes
+        
+        # Schedule Upcoming Results for 5:30 PM (17:30) IST
+        # fetch_and_process_upcoming handles its own "Tomorrow" logic
+        scheduler.add_job(fetch_and_process_upcoming, CronTrigger(hour=17, minute=30, timezone=config.TIMEZONE))
+        
         scheduler.start()
         
         logger.info("Concall Bot Scheduler Started (Async)")

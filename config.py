@@ -41,7 +41,7 @@ API_HEADERS = {
 
 # Nifty 500 CSV file path
 NIFTY_500_CSV = BASE_DIR / 'nifty_500.csv'
-NIFTY_FILTER = os.getenv('NIFTY_FILTER', 'False').lower() == 'true'
+NIFTY_FILTER = os.getenv('NIFTY_FILTER', 'True').lower() == 'true'
 
 # Scheduling Configuration
 SCHEDULE_TIME = os.getenv('SCHEDULE_TIME', '07:30')

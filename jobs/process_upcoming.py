@@ -223,10 +223,14 @@ async def fetch_and_process_upcoming():
                         logger.info("✅ Telegram album sent successfully (via direct API)!")
                         sent_success = True
 
-                except Exception as e:
-                    logger.error(f"⚠️ Direct API bulk send failed ({e}). Switching to individual send fallback...")
-                    
-                    # Fallback: Send Individually
+                    except httpx.HTTPStatusError as e:
+                        logger.error(f"⚠️ Direct API bulk send failed with status {e.response.status_code}: {e.response.text}")
+                        # Fallback logic below...
+                        sent_success = False 
+                    except Exception as e:
+                        logger.error(f"⚠️ Direct API bulk send failed ({type(e).__name__}: {e}). Switching to individual send fallback...")
+                        # Fallback logic below...
+                        sent_success = False
                     for idx, img_io in enumerate(generated_images):
                         try:
                             img_io.seek(0)

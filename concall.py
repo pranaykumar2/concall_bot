@@ -489,17 +489,34 @@ class ConcallResultsBot:
                         elif assent_name in self.nifty_500_companies:
                             matched_company = assent_name
                         else:
-                            matched_company = fuzzy_match_company(
-                                company_name, 
-                                self.nifty_500_companies, 
-                                self.nifty_500_normalized_map
-                            )
-                            if not matched_company and assent_name:
-                                matched_company = fuzzy_match_company(
-                                    assent_name,
-                                    self.nifty_500_companies,
-                                    self.nifty_500_normalized_map
-                                )
+                            # Simplified Filter: Check first 4 chars
+                            company_prefix = company_name[:4].lower()
+                            assent_prefix = assent_name[:4].lower() if assent_name else ""
+                            
+                            # Check if prefix matches any Nifty 500 company prefix
+                            # We need to ensure we have the prefixes loaded. 
+                            # Since we don't want to re-iterate nifty list every time, 
+                            # we should ideally have a set of prefixes.
+                            # But for now, let's iterate or use the loaded list.
+                            
+                            # Optimized: using pre-computed prefixes would be better, 
+                            # but let's check against the nornalized map keys or original list.
+                            
+                            match_found = False
+                            for nifty_co in self.nifty_500_companies:
+                                nifty_prefix = nifty_co[:4].lower()
+                                if company_prefix == nifty_prefix:
+                                    matched_company = nifty_co
+                                    match_found = True
+                                    break
+                                
+                                if assent_prefix and assent_prefix == nifty_prefix:
+                                    matched_company = nifty_co
+                                    match_found = True
+                                    break
+                            
+                            if match_found:
+                                logger.debug(f"Prefix match: '{company_name}' -> '{matched_company}'")
                         
                         if not matched_company:
                             logger.debug(f"Skipping {company_name} - Not in Nifty 500")

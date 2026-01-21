@@ -10,8 +10,9 @@ import sys
 import sqlite3
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple, Union
 from concurrent.futures import ThreadPoolExecutor
+from io import BytesIO
 
 import pandas as pd
 import pytz
@@ -19,7 +20,7 @@ import httpx
 import aiofiles
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from telegram import Bot
+from telegram import Bot, InputMediaPhoto
 from telegram.error import TelegramError, TimedOut
 from telegram.request import HTTPXRequest
 from tenacity import (
@@ -41,6 +42,7 @@ from jobs.process_upcoming import fetch_and_process_upcoming
 
 # Setup Logger
 logger = setup_logger(__name__, config.LOG_DIR)
+
 
 
 def normalize_company_name(name: str) -> str:
@@ -293,9 +295,9 @@ class ConcallResultsBot:
             # Telegram Bot Init
             request = HTTPXRequest(
                 connection_pool_size=8,
-                read_timeout=300.0,
-                write_timeout=300.0,
-                connect_timeout=60.0,
+                read_timeout=config.TELEGRAM_READ_TIMEOUT,
+                write_timeout=config.TELEGRAM_WRITE_TIMEOUT,
+                connect_timeout=config.TELEGRAM_CONNECT_TIMEOUT,
                 pool_timeout=60.0
             )
             self.bot = Bot(token=config.TELEGRAM_BOT_TOKEN, request=request)
@@ -324,9 +326,9 @@ class ConcallResultsBot:
             
             self.client = httpx.AsyncClient(
                 headers=self.browser_headers, 
-                timeout=60.0, 
+                timeout=config.PDF_DOWNLOAD_TIMEOUT, 
                 follow_redirects=True,
-                http2=True
+                http2=False # Forced HTTP/1.1 for Stability (Solves Zombie Connection)
             )
             
             # Database Init
@@ -484,46 +486,36 @@ class ConcallResultsBot:
                     matched_company = None
                     
                     if config.NIFTY_FILTER:
-                        if company_name in self.nifty_500_companies:
-                            matched_company = company_name
-                        elif assent_name in self.nifty_500_companies:
-                            matched_company = assent_name
-                        else:
-                            # Simplified Filter: Check first 4 chars
-                            company_prefix = company_name[:4].lower()
-                            assent_prefix = assent_name[:4].lower() if assent_name else ""
+                    # Strict Filter: Check first 4 chars against Nifty 500
+                    # We expect self.nifty_500_companies to be a set of full names.
+                    # Ideally, we should pre-compute the 4-char prefixes for O(1) lookup.
+                    # For now, we iterate, which is acceptable for 500 items.
+                    
+                        company_prefix = company_name[:4].lower()
+                        assent_prefix = assent_name[:4].lower() if assent_name else ""
+                        
+                        match_found = False
+                        
+                        # Check Company Name Prefix
+                        for nifty_co in self.nifty_500_companies:
+                            nifty_prefix = nifty_co[:4].lower()
                             
-                            # Check if prefix matches any Nifty 500 company prefix
-                            # We need to ensure we have the prefixes loaded. 
-                            # Since we don't want to re-iterate nifty list every time, 
-                            # we should ideally have a set of prefixes.
-                            # But for now, let's iterate or use the loaded list.
+                            if len(company_prefix) >= 4 and company_prefix == nifty_prefix:
+                                matched_company = nifty_co
+                                match_found = True
+                                break
                             
-                            # Optimized: using pre-computed prefixes would be better, 
-                            # but let's check against the nornalized map keys or original list.
-                            
-                            match_found = False
-                            for nifty_co in self.nifty_500_companies:
-                                nifty_prefix = nifty_co[:4].lower()
-                                if company_prefix == nifty_prefix:
-                                    matched_company = nifty_co
-                                    match_found = True
-                                    break
+                            # Fallback to Assent Name Prefix
+                            if len(assent_prefix) >= 4 and assent_prefix == nifty_prefix:
+                                matched_company = nifty_co
+                                match_found = True
+                                break
                                 
-                                if assent_prefix and assent_prefix == nifty_prefix:
-                                    matched_company = nifty_co
-                                    match_found = True
-                                    break
-                            
-                            if match_found:
-                                logger.debug(f"Prefix match: '{company_name}' -> '{matched_company}'")
-                        
-                        if not matched_company:
-                            logger.debug(f"Skipping {company_name} - Not in Nifty 500")
+                        if match_found:
+                            logger.debug(f"Prefix match (4-char): API '{company_name}' -> Nifty '{matched_company}'")
+                        else:
+                            logger.debug(f"Skipping {company_name} - No Nifty 500 match (First 4 chars mismatch)")
                             continue
-                        
-                        if matched_company != company_name and matched_company != assent_name:
-                            logger.info(f"Fuzzy matched: API '{company_name}' -> Nifty 500 '{matched_company}'")
                     else:
                         # If filtering is disabled, take the API name as is (or maybe prefer assent_name if available?)
                         # Keeping original logic flow but skipping the check
@@ -576,14 +568,14 @@ class ConcallResultsBot:
         retry=retry_if_exception_type(TelegramError),
         before_sleep=before_sleep_log(logger, logging.WARNING)
     )
-    async def send_telegram_message(self, message: str) -> bool:
+    async def send_telegram_message(self, message: str, parse_mode: str = None) -> bool:
         """Send message to Telegram channel"""
         try:
             logger.info("Sending message to Telegram channel...")
             await self.bot.send_message(
                 chat_id=self.channel_id,
                 text=message,
-                parse_mode=None
+                parse_mode=parse_mode
             )
             logger.info("Message sent successfully")
             return True
@@ -623,6 +615,32 @@ class ConcallResultsBot:
             return False
     
     @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, max=10),
+        retry=retry_if_exception_type(TelegramError),
+        before_sleep=before_sleep_log(logger, logging.WARNING)
+    )
+    async def send_telegram_album(self, media_group: List[InputMediaPhoto]) -> bool:
+        """Send a media group (album) to Telegram"""
+        try:
+            logger.info(f"Sending album of {len(media_group)} images to Telegram...")
+            await self.bot.send_media_group(
+                chat_id=self.channel_id,
+                media=media_group,
+                read_timeout=600,
+                write_timeout=600,
+                connect_timeout=60
+            )
+            logger.info("Album sent successfully")
+            return True
+        except TelegramError as e:
+            logger.error(f"Telegram error sending album: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error sending album: {e}")
+            return False
+
+    @retry(
         stop=stop_after_attempt(2),
         wait=wait_exponential(multiplier=2, max=15),
         retry=retry_if_exception(lambda x: isinstance(x, TelegramError) and not isinstance(x, TimedOut)),
@@ -632,24 +650,19 @@ class ConcallResultsBot:
         """Send document/PDF to Telegram channel"""
         try:
             logger.info(f"Sending document {file_path.name} to Telegram channel...")
-            async with aiofiles.open(file_path, 'rb') as doc:
-                # Telegram bot api usually requires a file-like object; aiofiles content can be read into memory or we might need to use standard open if wrapper doesn't support async stream.
-                # python-telegram-bot supports async via read/write, but usually wants a synchronous file handle or bytes.
-                # For safety/compatibility with standard PTB: read into BytesIO if small, or use standard open in run_in_executor if huge?
-                # Actually, PTB `send_document` accepts a file-like object.
-                # Let's read into memory for now since we are careful about RAM but streaming uploads to Telegram is tricky without their specific support.
-                # Wait, PTB is async now, but the `document` arg often expects a sync file handle unless we pass bytes.
-                content = await doc.read()
-            
-            await self.bot.send_document(
-                chat_id=self.channel_id,
-                document=content,
-                filename=file_path.name,
-                caption=caption,
-                read_timeout=600,
-                write_timeout=600,
-                connect_timeout=60
-            )
+            # Optimized: Stream file directly to prevent RAM spikes (Fixed OOM)
+            with open(file_path, 'rb') as f:
+                content = f # Pass file handle directly
+                
+                await self.bot.send_document(
+                    chat_id=self.channel_id,
+                    document=content,
+                    filename=file_path.name,
+                    caption=caption,
+                    read_timeout=600,
+                    write_timeout=600,
+                    connect_timeout=60
+                )
             logger.info("Document sent successfully")
             return True
         except TelegramError as e:
@@ -752,7 +765,10 @@ class ConcallResultsBot:
 
             # 2. Extract and Filter New Companies
             companies = self.extract_companies(data)
-            new_companies = self.get_new_companies(companies)
+            
+            # Offload DB call to executor to avoid blocking event loop
+            loop = asyncio.get_running_loop()
+            new_companies = await loop.run_in_executor(None, self.get_new_companies, companies)
             
             if not new_companies:
                 logger.info("No new updates found")
@@ -760,17 +776,15 @@ class ConcallResultsBot:
 
             logger.info(f"Processing {len(new_companies)} new updates...")
             
-            # Sort by name for nicer album presentation? Or keep time based?
-            # Keeping time based as per extract_companies sort is usually best for "Live" feel.
+            # 3. Generate All Images First (Concurrently)
+            processed_items = [] # List of tuples: (company_dict, image_bytes)
             
-            # 3. Process new companies individually
+            loop = asyncio.get_running_loop()
+            
+            # Generate images for all new companies
             for company in new_companies:
                 try:
-                    logger.info(f"Processing {company['name']}...")
-                    
-                    # A. Generate Image
-                    # Offload to thread pool to avoid blocking asyncio loop
-                    loop = asyncio.get_running_loop()
+                    logger.info(f"Generating image for {company['name']}...")
                     image_bytes = await loop.run_in_executor(
                         self.cpu_executor,
                         self.image_generator.generate_news_image,
@@ -778,41 +792,88 @@ class ConcallResultsBot:
                         company['description'],
                         ""
                     )
-                    
-                    # B. Send Image
-                    # caption = self.format_telegram_message([company['name']]) # Removed caption per user request
-                    if not await self.send_telegram_image(image_bytes, caption=None):
-                        logger.error(f"Failed to send image for {company['name']}")
-                        continue
-                    
-                    # C. Download and Send PDF
-                    if company['resultLink']:
-                        pdf_filename = self.generate_pdf_filename(company['name'], company['description'])
-                        pdf_path = config.PDF_DOWNLOAD_DIR / pdf_filename
-                        
-                        if await self.download_pdf(company['resultLink'], pdf_path):
-                            await self.send_telegram_document(pdf_path, caption=None)
-                            
-                            # Cleanup PDF
-                            try:
-                                if pdf_path.exists():
-                                    pdf_path.unlink()
-                            except Exception as e:
-                                logger.warning(f"Failed to delete PDF {pdf_path}: {e}")
-                    
-                    # D. Mark as Sent
-                    self.mark_companies_sent([company])
-                    
-                    # Rate limiting
-                    await asyncio.sleep(2)
+                    processed_items.append((company, image_bytes))
                     
                 except Exception as e:
-                    logger.error(f"Error processing {company['name']}: {e}")
+                    logger.error(f"Failed to generate image for {company['name']}: {e}")
                     continue
+
+            if not processed_items:
+                logger.warning("No images generated successfully. Exiting job.")
+                return
+
+            # 4. Sequential Sending Logic (Strict Order: Image -> PDF -> Next)
+            logger.info("Starting sequential sending...")
             
+            for company, img_bytes in processed_items:
+                try:
+                    # A. Send Image (No Caption)
+                    if await self.send_telegram_image(img_bytes, caption=None):
+                        # B. Download and Send PDF
+                        await self._process_pdf_delivery(company)
+                        
+                        # C. Mark Sent (Offload to thread)
+                        await loop.run_in_executor(None, self.mark_companies_sent, [company])
+                        
+                        # Rate limiting between companies
+                        await asyncio.sleep(2)
+                        
+                except Exception as e:
+                    logger.error(f"Error sending data for {company['name']}: {e}")
+                    continue
+        
         except Exception as e:
             logger.error(f"Job execution failed: {e}")
-            logger.error(f"Job execution failed: {e}")
+
+    async def _process_pdf_delivery(self, company: Dict[str, str]):
+        """Helper to download and send PDF for a company"""
+        if not company.get('resultLink'):
+            return
+
+        try:
+            pdf_filename = self.generate_pdf_filename(company['name'], company['description'])
+            pdf_path = config.PDF_DOWNLOAD_DIR / pdf_filename
+            
+            # Download
+            if await self.download_pdf(company['resultLink'], pdf_path):
+                
+                # Send with minimal caption or just filename? 
+                # User preference seems to be No Caption for single/simple items.
+                try:
+                    sent = await self.send_telegram_document(pdf_path, caption=None)
+                    if not sent:
+                        raise Exception("Document send returned False (Unknown Error)")
+                except Exception as e:
+                    # If sending fails (e.g. timeout), re-raise to trigger fallback
+                    logger.error(f"Failed to send document to Telegram: {e}")
+                    raise e
+                finally:
+                    # Cleanup PDF
+                    try:
+                        if pdf_path.exists():
+                            pdf_path.unlink()
+                    except Exception as e:
+                        logger.warning(f"Failed to delete PDF {pdf_path}: {e}")
+
+        except Exception as e:
+            logger.error(f"Error processing PDF for {company['name']}: {e}")
+            
+            # Fallback: Send Text Link
+            try:
+                # Escape special characters for MarkdownV2 if needed, or use 'Markdown'
+                # Simple Markdown is easier for links: [text](url)
+                fallback_msg = (
+                    f"⚠️ *PDF Upload Failed*\n"
+                    f"Could not upload the results PDF for {company['name']}.\n\n"
+                    f"🔗 [Click here to download PDF]({company['resultLink']})"
+                )
+                await self.send_telegram_message(fallback_msg, parse_mode='Markdown')
+                logger.info(f"Sent fallback link for {company['name']}")
+            except Exception as fb_error:
+                logger.error(f"Failed to send fallback link: {fb_error}")
+            
+            # Do NOT re-raise, so we continue to mark as sent
+            return
 
 async def main():
     """Main entry point"""

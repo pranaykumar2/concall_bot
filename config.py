@@ -41,7 +41,7 @@ API_HEADERS = {
 
 # Nifty 500 CSV file path
 NIFTY_500_CSV = BASE_DIR / 'nifty_500.csv'
-NIFTY_FILTER = os.getenv('NIFTY_FILTER', 'True').lower() == 'true'
+NIFTY_FILTER = str(os.getenv('NIFTY_FILTER', 'True')).lower() in ('true', '1', 'yes', 'y', 'on')
 
 # Scheduling Configuration
 SCHEDULE_TIME = os.getenv('SCHEDULE_TIME', '07:30')
@@ -61,6 +61,12 @@ MESSAGE_TEMPLATE = """FY26 Q3 Corporate Earnings - Live
 
 📅 Date: {date}
 ⏰ Update: {time}"""
+
+# Network Timeouts (Seconds)
+TELEGRAM_CONNECT_TIMEOUT = 60
+TELEGRAM_READ_TIMEOUT = 600  # 10 minutes for large uploads
+TELEGRAM_WRITE_TIMEOUT = 600 # 10 minutes for large uploads
+PDF_DOWNLOAD_TIMEOUT = 300   # 5 minutes for slow servers
 
 # Image Generator Configuration
 # Font Sizes (in points)

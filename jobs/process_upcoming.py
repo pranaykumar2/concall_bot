@@ -15,7 +15,8 @@ from telegram import Bot
 import json
 
 # Setup logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# Setup logging
+# logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 async def fetch_and_process_upcoming():
@@ -117,7 +118,9 @@ async def fetch_and_process_upcoming():
     total_items = len(filtered_companies)
     total_pages = (total_items + CHUNK_SIZE - 1) // CHUNK_SIZE
     
-    generator = UpcomingImpactGenerator()
+    # Run generator init in thread because it downloads fonts (blocking)
+    loop = asyncio.get_running_loop()
+    generator = await loop.run_in_executor(None, UpcomingImpactGenerator)
     
     # Process chunks
     generated_images = []
@@ -164,70 +167,28 @@ async def fetch_and_process_upcoming():
                     caption = None
                     if idx == 0:
                         caption = (
-                            f"<b>Upcoming Results for {display_date}</b>\n"
-                            f"Full List of companies with detailed reporting  will be shared tomorrow.\n\n"
-                            f"<b>Stay Tuned, </b>Thank You!"
+                            f"<b>Q3 FY26 - Corporate Earnings for tomorrow\n"
                         )
                     media_group.append(InputMediaPhoto(media=img_io, caption=caption, parse_mode='HTML'))
                 
                 try:
-                    # Manual HTTPX implementation as per user request
-                    # Construct media array for JSON payload
-                    media_payload = []
-                    files_payload = []
-                    
-                    for idx, img_io in enumerate(generated_images):
+                    # Native Album Sending (Replaced manual HTTPX implementation)
+                    # Note: We need to rewind IO buffers for re-use if retries happen, but here we construct once.
+                    for img_io in generated_images:
                         img_io.seek(0)
-                        file_key = f"photo{idx}"
                         
-                        media_item = {
-                            "type": "photo",
-                            "media": f"attach://{file_key}"
-                        }
-                        
-                        # Add caption to the first item
-                        if idx == 0:
-                            caption_text = (
-                                f"<b>Upcoming Results for {display_date}</b>\n"
-                                f"Full List of companies with detailed reporting will be shared tomorrow.\n\n"
-                                f"<b>Stay Tuned, </b>Thank You!"
-                            )
-                            media_item["caption"] = caption_text
-                            media_item["parse_mode"] = "HTML"
-                            
-                        media_payload.append(media_item)
-                        
-                        # Add to files list for multipart upload
-                        # (param_name, (filename, file_content, content_type))
-                        files_payload.append(
-                            (file_key, (f"image{idx}.png", img_io.read(), "image/png"))
-                        )
+                    await bot.send_media_group(
+                        chat_id=config.TELEGRAM_CHANNEL_ID,
+                        media=media_group,
+                        read_timeout=600,
+                        write_timeout=600,
+                        connect_timeout=60
+                    )
+                    logger.info("✅ Telegram album sent successfully!")
+                    sent_success = True
 
-                    # Prepare the full payload
-                    data_payload = {
-                        "chat_id": config.TELEGRAM_CHANNEL_ID,
-                        "media": json.dumps(media_payload)
-                    }
-
-                    # Send request using httpx
-                    api_url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMediaGroup"
-                    
-                    async with httpx.AsyncClient() as client:
-                        resp = await client.post(
-                            api_url, 
-                            data=data_payload, 
-                            files=files_payload, 
-                            timeout=120.0
-                        )
-                        resp.raise_for_status()
-                        logger.info("✅ Telegram album sent successfully (via direct API)!")
-                        sent_success = True
-
-                except httpx.HTTPStatusError as e:
-                    logger.error(f"⚠️ Direct API bulk send failed with status {e.response.status_code}: {e.response.text}")
-                    sent_success = False 
                 except Exception as e:
-                    logger.error(f"⚠️ Direct API bulk send failed ({type(e).__name__}: {e}). Switching to individual send fallback...")
+                    logger.error(f"⚠️ Album send failed ({type(e).__name__}: {e}). Switching to individual send fallback...")
                     sent_success = False
                 
                 if not sent_success:
@@ -242,7 +203,6 @@ async def fetch_and_process_upcoming():
                                     f"#Earnings #StockMarket"
                                 )
                             
-                            # Using library for single send fallback as it is simple
                             await bot.send_photo(
                                 chat_id=config.TELEGRAM_CHANNEL_ID,
                                 photo=img_io,
@@ -290,5 +250,7 @@ async def fetch_and_process_upcoming():
 if __name__ == "__main__":
     if sys.platform == 'win32':
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-        
+    
+    # Configure logging for standalone run
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     asyncio.run(fetch_and_process_upcoming())

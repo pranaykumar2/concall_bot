@@ -2,15 +2,16 @@ import logging
 import sys
 from datetime import datetime
 from pathlib import Path
+import shutil
 from colorama import init, Fore, Back, Style
 
 # Initialize colorama
 init(autoreset=True)
 
-class ProfessionalFormatter(logging.Formatter):
+class ElegantFormatter(logging.Formatter):
     """
-    Formatter that produces the professional look:
-    Date [HH:MM:SS] ▕ LEVEL ▏ Message
+    Formatter that produces a sleek, professional look:
+    14:30:01 │ INFO  │ Source: Concall Bot 2.0
     """
     
     # Custom Levels
@@ -26,24 +27,38 @@ class ProfessionalFormatter(logging.Formatter):
         SENT_LEVEL_NUM: Fore.GREEN
     }
 
+    ICONS = {
+        logging.DEBUG: "⚙️",
+        logging.INFO: "ℹ️",
+        logging.WARNING: "⚠️",
+        logging.ERROR: "❌",
+        logging.CRITICAL: "🚨",
+        SENT_LEVEL_NUM: "🚀"
+    }
+
     def format(self, record):
         # Format Date and Time
         dt = datetime.fromtimestamp(record.created)
-        date_str = dt.strftime('%Y-%m-%d')
+        # date_str = dt.strftime('%Y-%m-%d')
         time_str = dt.strftime('%H:%M:%S')
         
         # Level Styling
         level_color = self.COLORS.get(record.levelno, Fore.WHITE)
         level_name = record.levelname
-        # Center align level name in 6 chars
-        level_text = f"{level_name:^6}"
         
-        # Construct the prefix: Date [Time] ▕ LEVEL ▏
-        # Using ▕ and ▏ for the box effect
+        # Consistent width for level (5 chars to fit SENT, INFO, WARN)
+        level_text = f"{level_name:<5}"
+        
+        # Use a vertical bar as separator
+        separator = f"{Fore.BLACK}{Style.BRIGHT}│{Style.RESET_ALL}"
+        
+        # Construct the prefix: Time │ LEVEL │
+        # Using grey for time to make it less distracting
         prefix = (
-            f"{Fore.LIGHTBLACK_EX}{date_str} "
-            f"[{time_str}]{Style.RESET_ALL} "
-            f"{level_color}▕ {level_text} ▏{Style.RESET_ALL}"
+            f"{Fore.BLACK}{Style.BRIGHT}{time_str}{Style.RESET_ALL} "
+            f"{separator} "
+            f"{level_color}{Style.BRIGHT}{level_text}{Style.RESET_ALL} "
+            f"{separator}"
         )
         
         message = record.getMessage()
@@ -52,34 +67,50 @@ class ProfessionalFormatter(logging.Formatter):
         if record.levelno >= logging.ERROR:
             message = f"{level_color}{message}{Style.RESET_ALL}"
         elif record.levelno == self.SENT_LEVEL_NUM:
-            # Add checkmark for SENT
-            if "Sent:" in message:
-                message = message.replace("Sent:", f"✅ Sent:")
-            # Tree structure handling is done in the log call usually, but we can enhance it here if needed
             message = f"{Fore.GREEN}{message}{Style.RESET_ALL}"
+        elif record.levelno == logging.WARNING:
+            message = f"{Fore.YELLOW}{message}{Style.RESET_ALL}"
             
         return f"{prefix} {message}"
 
 def setup_logger(name: str, log_dir: Path) -> logging.Logger:
-    """Sets up the logger with the professional formatter"""
+    """Sets up the logger with the elegant formatter"""
     
     # Register custom level
-    logging.addLevelName(ProfessionalFormatter.SENT_LEVEL_NUM, "SENT")
+    logging.addLevelName(ElegantFormatter.SENT_LEVEL_NUM, "SENT")
     def sent(self, message, *args, **kws):
-        if self.isEnabledFor(ProfessionalFormatter.SENT_LEVEL_NUM):
-            self._log(ProfessionalFormatter.SENT_LEVEL_NUM, message, args, **kws)
+        if self.isEnabledFor(ElegantFormatter.SENT_LEVEL_NUM):
+            self._log(ElegantFormatter.SENT_LEVEL_NUM, message, args, **kws)
     logging.Logger.sent = sent
     
     logger = logging.getLogger(name)
     logger.setLevel(logging.INFO)
     
-    if logger.handlers:
-        logger.handlers.clear()
+def setup_logger(name: str, log_dir: Path) -> logging.Logger:
+    """
+    Sets up the ROOT logger with the elegant formatter so all modules (including apscheduler)
+    use the same style. Returns the requested named logger.
+    """
+    
+    # Register custom level
+    logging.addLevelName(ElegantFormatter.SENT_LEVEL_NUM, "SENT")
+    def sent(self, message, *args, **kws):
+        if self.isEnabledFor(ElegantFormatter.SENT_LEVEL_NUM):
+            self._log(ElegantFormatter.SENT_LEVEL_NUM, message, args, **kws)
+    logging.Logger.sent = sent
+    
+    # Configure Root Logger once
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    
+    # Clear existing handlers to prevent duplicates
+    if root_logger.handlers:
+        root_logger.handlers.clear()
         
     # Console Handler
     console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setFormatter(ProfessionalFormatter())
-    logger.addHandler(console_handler)
+    console_handler.setFormatter(ElegantFormatter())
+    root_logger.addHandler(console_handler)
     
     # File Handler - Standard format for parsing
     log_dir.mkdir(exist_ok=True)
@@ -89,55 +120,60 @@ def setup_logger(name: str, log_dir: Path) -> logging.Logger:
     file_handler = logging.FileHandler(log_file, encoding='utf-8')
     file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     file_handler.setFormatter(file_formatter)
-    logger.addHandler(file_handler)
+    root_logger.addHandler(file_handler)
     
-    return logger
+    # Return the requested logger (which will propagate to root)
+    return logging.getLogger(name)
 
 def print_box(logger, title: str, content: dict, color=Fore.CYAN):
     """
-    Prints a beautiful box summary
-    ╭─── Title ───────╮
-    │  Key:    Value  │
-    ╰─────────────────╯
+    Prints a beautiful, elegant box summary
     """
-    # Calculate width based on longest line
-    # Fixed minimum width 40
-    import shutil
-    # term_width = shutil.get_terminal_size((80, 20)).columns
-    # width = min(60, term_width) 
-    width = 50
+    # Fixed width for consistency
+    width = 55
     
-    # Title line
-    title_len = len(title)
-    dash_len = width - title_len - 7 # ╭───  ───╮ (7 chars)
-    left_dash = "─" * 3
-    right_dash = "─" * (width - 5 - len(title) - 3) # border(1) + left_dash(3) + space(1) + title + space(1) + right_dash + border(1)
+    # Colors
+    border_color = f"{color}{Style.BRIGHT}"
+    text_color = f"{Fore.WHITE}"
+    reset = Style.RESET_ALL
     
-    top_border = f"{color}╭{left_dash} {Style.BRIGHT}{title}{Style.NORMAL}{color} {right_dash}╮{Style.RESET_ALL}"
-    logger.info(top_border)
+    # Top Border
+    # ╭───────────────── TITLE ─────────────────╮
+    title_display = f" {title} "
+    dash_count = (width - 2 - len(title_display)) // 2
+    left_dashes = "─" * dash_count
+    right_dashes = "─" * (width - 2 - len(title_display) - dash_count)
     
+    logger.info(f"{border_color}╭{left_dashes}{Style.NORMAL}{title_display}{Style.BRIGHT}{right_dashes}╮{reset}")
+    
+    # Content
     for key, value in content.items():
-        # Ensure value is string
         val_str = str(value)
-        # Format: │  Key:    Value   │
+        # Format: │ Key          Value              │
+        # Key takes up to 15 chars
+        key_display = f"{key}"
+        
         # Calculate padding
-        key_str = f"{key}:"
-        line_content = f"  {key_str:<15} {val_str}"
-        padding = width - 2 - len(line_content) # Total width - borders(2) - content
+        content_len = len(key_display) + len(val_str) + 10 # approximate spacing
+        # Just use f-string alignment
+        # │ Key............... Value │
+        
+        # We want: │ Key:       Value       │
+        line_inner = f"  {key_display:<18} {val_str}"
+        padding = width - 4 - len(line_inner) # -2 for borders, -2 for margin
         if padding < 0: padding = 0
         
-        line = f"{color}│{Style.RESET_ALL}{line_content}{' ' * padding}{color}│{Style.RESET_ALL}"
-        logger.info(line)
+        logger.info(f"{border_color}│{reset}{line_inner}{' ' * padding}  {border_color}│{reset}")
         
-    bottom_border = f"{color}╰{'─' * (width - 2)}╯{Style.RESET_ALL}"
-    logger.info(bottom_border)
+    # Bottom Border
+    logger.info(f"{border_color}╰{'─' * (width - 2)}╯{reset}")
 
 def log_tree(logger, message, level="INFO", color=Fore.WHITE):
     """
     Logs a message with a tree branch style
-       ╰──> Message
+       └─> Message
     """
-    tree_char = "   ╰──>"
+    tree_char = "   └─>"
     msg = f"{color}{tree_char} {message}{Style.RESET_ALL}"
     if level == "SENT":
         logger.sent(msg)

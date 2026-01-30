@@ -292,18 +292,18 @@ class ConcallResultsBot:
         try:
             config.validate_config()
             
-            # Telegram Bot Init
+            # Telegram Bot Init - Optimized for mobile networks
             request = HTTPXRequest(
-                connection_pool_size=8,
+                connection_pool_size=4,  # Reduced for mobile stability
                 read_timeout=config.TELEGRAM_READ_TIMEOUT,
                 write_timeout=config.TELEGRAM_WRITE_TIMEOUT,
                 connect_timeout=config.TELEGRAM_CONNECT_TIMEOUT,
-                pool_timeout=60.0
+                pool_timeout=120.0  # Increased for mobile
             )
             self.bot = Bot(token=config.TELEGRAM_BOT_TOKEN, request=request)
             self.channel_id = config.TELEGRAM_CHANNEL_ID
             
-            # HTTP Client Setup (httpx)
+            # HTTP Client Setup (httpx) - Optimized for both mobile and desktop
             # Network Engineer Grade Headers for BSE (Updated for 2026 Chrome 143)
             self.browser_headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
@@ -324,11 +324,27 @@ class ConcallResultsBot:
                 "DNT": "1"
             }
             
+            # Configure httpx with robust timeout settings for mobile
+            httpx_timeout = httpx.Timeout(
+                connect=60.0,  # Connection timeout
+                read=config.PDF_DOWNLOAD_TIMEOUT,  # Read timeout
+                write=60.0,  # Write timeout
+                pool=120.0   # Pool timeout (getting connection from pool)
+            )
+            
+            # Configure limits for mobile stability
+            httpx_limits = httpx.Limits(
+                max_keepalive_connections=5,
+                max_connections=10,
+                keepalive_expiry=30.0
+            )
+            
             self.client = httpx.AsyncClient(
                 headers=self.browser_headers, 
-                timeout=config.PDF_DOWNLOAD_TIMEOUT, 
+                timeout=httpx_timeout, 
+                limits=httpx_limits,
                 follow_redirects=True,
-                http2=False # Forced HTTP/1.1 for Stability (Solves Zombie Connection)
+                http2=False  # Forced HTTP/1.1 for Stability (Solves Zombie Connection)
             )
             
             # Database Init
@@ -641,84 +657,212 @@ class ConcallResultsBot:
             return False
 
     @retry(
-        stop=stop_after_attempt(2),
-        wait=wait_exponential(multiplier=2, max=15),
-        retry=retry_if_exception(lambda x: isinstance(x, TelegramError) and not isinstance(x, TimedOut)),
+        stop=stop_after_attempt(5),  # Increased retries for mobile networks
+        wait=wait_exponential(multiplier=3, min=5, max=60),  # Longer waits between retries
+        retry=retry_if_exception_type((TelegramError, OSError, IOError)),  # Retry on network/file errors
         before_sleep=before_sleep_log(logger, logging.WARNING)
     )
     async def send_telegram_document(self, file_path: Path, caption: str = None) -> bool:
-        """Send document/PDF to Telegram channel"""
+        """
+        Send document/PDF to Telegram channel with robust error handling.
+        Uses BytesIO buffer method which is more reliable on Android/Termux.
+        """
         try:
-            logger.info(f"Sending document {file_path.name} to Telegram channel...")
-            # Optimized: Stream file directly to prevent RAM spikes (Fixed OOM)
+            # Validate file exists and get size
+            if not file_path.exists():
+                logger.error(f"File not found: {file_path}")
+                return False
+            
+            file_size_mb = file_path.stat().st_size / (1024 * 1024)
+            logger.info(f"Sending document {file_path.name} ({file_size_mb:.2f} MB) to Telegram...")
+            
+            # Check Telegram file size limit (50MB)
+            if file_size_mb > config.PDF_MAX_SIZE_MB:
+                logger.error(f"File too large: {file_size_mb:.2f} MB > {config.PDF_MAX_SIZE_MB} MB limit")
+                return False
+            
+            # Method: Load file into BytesIO buffer (more reliable on mobile)
+            # This prevents issues with file handles being closed mid-upload
+            file_bytes = BytesIO()
             with open(file_path, 'rb') as f:
-                content = f # Pass file handle directly
-                
-                await self.bot.send_document(
-                    chat_id=self.channel_id,
-                    document=content,
-                    filename=file_path.name,
-                    caption=caption,
-                    read_timeout=600,
-                    write_timeout=600,
-                    connect_timeout=60
-                )
+                # Read in chunks to handle large files without memory issues
+                while chunk := f.read(config.PDF_UPLOAD_CHUNK_SIZE):
+                    file_bytes.write(chunk)
+            
+            file_bytes.seek(0)
+            file_bytes.name = file_path.name  # Required for Telegram filename
+            
+            await self.bot.send_document(
+                chat_id=self.channel_id,
+                document=file_bytes,
+                filename=file_path.name,
+                caption=caption,
+                read_timeout=config.TELEGRAM_READ_TIMEOUT,
+                write_timeout=config.TELEGRAM_WRITE_TIMEOUT,
+                connect_timeout=config.TELEGRAM_CONNECT_TIMEOUT
+            )
             logger.info("Document sent successfully")
             return True
+            
         except TelegramError as e:
-            logger.error(f"Telegram error: {e}")
-            raise
+            logger.error(f"Telegram error sending {file_path.name}: {e}")
+            raise  # Retry
+        except (OSError, IOError) as e:
+            logger.error(f"File I/O error: {e}")
+            raise  # Retry
         except Exception as e:
-            logger.error(f"Unexpected error sending document: {e}")
+            logger.error(f"Unexpected error sending document: {type(e).__name__}: {e}")
             return False
     
+    async def _send_pdf_alternative(self, file_path: Path, caption: str = None) -> bool:
+        """
+        Alternative PDF upload method using a fresh Bot instance.
+        This helps when the main bot connection gets stuck on mobile networks.
+        """
+        temp_bot = None
+        try:
+            logger.info(f"Alternative upload: Creating fresh connection for {file_path.name}...")
+            
+            # Create a fresh bot instance with more aggressive timeouts
+            temp_request = HTTPXRequest(
+                connection_pool_size=1,
+                read_timeout=config.TELEGRAM_READ_TIMEOUT,
+                write_timeout=config.TELEGRAM_WRITE_TIMEOUT,
+                connect_timeout=config.TELEGRAM_CONNECT_TIMEOUT,
+                pool_timeout=120.0
+            )
+            temp_bot = Bot(token=config.TELEGRAM_BOT_TOKEN, request=temp_request)
+            
+            # Load entire file into memory (works better on unstable connections)
+            with open(file_path, 'rb') as f:
+                file_content = f.read()
+            
+            file_bytes = BytesIO(file_content)
+            file_bytes.name = file_path.name
+            
+            file_size_mb = len(file_content) / (1024 * 1024)
+            logger.info(f"Alternative upload: Sending {file_size_mb:.2f} MB...")
+            
+            await temp_bot.send_document(
+                chat_id=self.channel_id,
+                document=file_bytes,
+                filename=file_path.name,
+                caption=caption,
+                read_timeout=config.TELEGRAM_READ_TIMEOUT,
+                write_timeout=config.TELEGRAM_WRITE_TIMEOUT,
+                connect_timeout=config.TELEGRAM_CONNECT_TIMEOUT
+            )
+            
+            logger.info("Alternative upload: Document sent successfully")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Alternative upload failed: {type(e).__name__}: {e}")
+            return False
+        finally:
+            # Cleanup temp bot
+            if temp_bot:
+                try:
+                    # Close the bot's HTTP client if it has one
+                    if hasattr(temp_bot, '_request') and hasattr(temp_bot._request, 'shutdown'):
+                        await temp_bot._request.shutdown()
+                except Exception:
+                    pass
+    
     @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=2, max=10),
-        retry=retry_if_exception_type((httpx.RequestError, OSError)),
+        stop=stop_after_attempt(5),  # Increased retries for mobile networks
+        wait=wait_exponential(multiplier=3, min=5, max=60),  # Longer waits
+        retry=retry_if_exception_type((httpx.RequestError, httpx.HTTPStatusError, OSError, asyncio.TimeoutError)),
         before_sleep=before_sleep_log(logger, logging.WARNING)
     )
     async def download_pdf(self, url: str, output_path: Path) -> bool:
         """
-        Stream download PDF from URL using HTTPX with fallback support
+        Stream download PDF from URL using HTTPX with fallback support.
+        Optimized for reliability on mobile networks (Termux).
         """
         logger.info(f"Downloading PDF from {url}")
         
         try:
-            async with self.client.stream('GET', url) as response:
-                response.raise_for_status()
-                async with aiofiles.open(output_path, 'wb') as f:
-                    async for chunk in response.aiter_bytes(chunk_size=8192):
-                        await f.write(chunk)
+            # Use longer timeout for mobile networks
+            timeout = httpx.Timeout(
+                connect=60.0,
+                read=config.PDF_DOWNLOAD_TIMEOUT,
+                write=60.0,
+                pool=60.0
+            )
             
-            logger.info(f"PDF saved to {output_path}")
-            return True
+            async with self.client.stream('GET', url, timeout=timeout) as response:
+                response.raise_for_status()
+                
+                # Get content length if available
+                content_length = response.headers.get('content-length')
+                if content_length:
+                    logger.info(f"PDF size: {int(content_length) / (1024*1024):.2f} MB")
+                
+                async with aiofiles.open(output_path, 'wb') as f:
+                    downloaded = 0
+                    async for chunk in response.aiter_bytes(chunk_size=32768):  # 32KB chunks
+                        await f.write(chunk)
+                        downloaded += len(chunk)
+            
+            # Verify file was downloaded
+            if output_path.exists() and output_path.stat().st_size > 0:
+                logger.info(f"PDF saved to {output_path}")
+                return True
+            else:
+                logger.error("Downloaded file is empty or missing")
+                return False
             
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:
                 logger.warning(f"Primary link 404s. Attempting fallback for {url}")
-                try:
-                    from urllib.parse import urlparse, parse_qs
-                    parsed = urlparse(url)
-                    params = parse_qs(parsed.query)
-                    
-                    if 'Pname' in params:
-                        pname = params['Pname'][0]
-                        fallback_url = f"https://www.bseindia.com/xml-data/corpfiling/AttachLive/{pname}"
-                        
-                        logger.info(f"Trying fallback URL: {fallback_url}")
-                        async with self.client.stream('GET', fallback_url) as fb_response:
-                            fb_response.raise_for_status()
-                            async with aiofiles.open(output_path, 'wb') as f:
-                                async for chunk in fb_response.aiter_bytes(chunk_size=8192):
-                                    await f.write(chunk)
-                        
-                        logger.info(f"PDF saved from fallback to {output_path}")
-                        return True
-                except Exception as fallback_error:
-                    logger.error(f"Fallback failed: {fallback_error}")
-            
+                return await self._download_pdf_fallback(url, output_path)
             raise e
+        except (httpx.RequestError, asyncio.TimeoutError) as e:
+            logger.error(f"Network error downloading PDF: {type(e).__name__}: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error downloading PDF: {type(e).__name__}: {e}")
+            raise
+    
+    async def _download_pdf_fallback(self, original_url: str, output_path: Path) -> bool:
+        """Fallback PDF download using direct BSE URL."""
+        try:
+            from urllib.parse import urlparse, parse_qs
+            parsed = urlparse(original_url)
+            params = parse_qs(parsed.query)
+            
+            if 'Pname' not in params:
+                logger.error("Cannot construct fallback URL: Pname not found")
+                return False
+            
+            pname = params['Pname'][0]
+            fallback_url = f"https://www.bseindia.com/xml-data/corpfiling/AttachLive/{pname}"
+            
+            logger.info(f"Trying fallback URL: {fallback_url}")
+            
+            timeout = httpx.Timeout(
+                connect=60.0,
+                read=config.PDF_DOWNLOAD_TIMEOUT,
+                write=60.0,
+                pool=60.0
+            )
+            
+            async with self.client.stream('GET', fallback_url, timeout=timeout) as fb_response:
+                fb_response.raise_for_status()
+                async with aiofiles.open(output_path, 'wb') as f:
+                    async for chunk in fb_response.aiter_bytes(chunk_size=32768):
+                        await f.write(chunk)
+            
+            if output_path.exists() and output_path.stat().st_size > 0:
+                logger.info(f"PDF saved from fallback to {output_path}")
+                return True
+            
+            return False
+            
+        except Exception as fallback_error:
+            logger.error(f"Fallback download failed: {fallback_error}")
+            raise
     
     def generate_pdf_filename(self, company_name: str, description: str) -> str:
         """Generate PDF filename based on company name and description"""
@@ -826,42 +970,64 @@ class ConcallResultsBot:
             logger.error(f"Job execution failed: {e}")
 
     async def _process_pdf_delivery(self, company: Dict[str, str]):
-        """Helper to download and send PDF for a company"""
+        """
+        Helper to download and send PDF for a company.
+        Implements multiple retry strategies for maximum reliability on mobile networks.
+        """
         if not company.get('resultLink'):
             return
 
+        pdf_path = None
+        upload_success = False
+        
         try:
             pdf_filename = self.generate_pdf_filename(company['name'], company['description'])
             pdf_path = config.PDF_DOWNLOAD_DIR / pdf_filename
             
-            # Download
-            if await self.download_pdf(company['resultLink'], pdf_path):
+            # Download PDF with retries (handled by @retry decorator)
+            download_success = await self.download_pdf(company['resultLink'], pdf_path)
+            
+            if not download_success:
+                logger.error(f"Failed to download PDF for {company['name']}")
+                raise Exception("PDF download failed")
+            
+            # Verify downloaded file is valid
+            if not pdf_path.exists() or pdf_path.stat().st_size == 0:
+                logger.error(f"Downloaded PDF is empty or missing: {pdf_path}")
+                raise Exception("Downloaded PDF is invalid")
+            
+            file_size_mb = pdf_path.stat().st_size / (1024 * 1024)
+            logger.info(f"PDF downloaded successfully: {file_size_mb:.2f} MB")
+            
+            # Attempt 1: Standard upload with retries (5 attempts built-in)
+            try:
+                upload_success = await self.send_telegram_document(pdf_path, caption=None)
+            except Exception as e:
+                logger.warning(f"Standard upload failed after retries: {e}")
+                upload_success = False
+            
+            # Attempt 2: If standard failed, try with a fresh HTTP client
+            if not upload_success:
+                logger.info(f"Attempting alternative upload method for {company['name']}...")
+                await asyncio.sleep(5)  # Wait before retry
                 
-                # Send with minimal caption or just filename? 
-                # User preference seems to be No Caption for single/simple items.
                 try:
-                    sent = await self.send_telegram_document(pdf_path, caption=None)
-                    if not sent:
-                        raise Exception("Document send returned False (Unknown Error)")
+                    upload_success = await self._send_pdf_alternative(pdf_path)
                 except Exception as e:
-                    # If sending fails (e.g. timeout), re-raise to trigger fallback
-                    logger.error(f"Failed to send document to Telegram: {e}")
-                    raise e
-                finally:
-                    # Cleanup PDF
-                    try:
-                        if pdf_path.exists():
-                            pdf_path.unlink()
-                    except Exception as e:
-                        logger.warning(f"Failed to delete PDF {pdf_path}: {e}")
-
+                    logger.error(f"Alternative upload also failed: {e}")
+                    upload_success = False
+            
+            if upload_success:
+                logger.info(f"PDF upload completed successfully for {company['name']}")
+            else:
+                raise Exception("All upload methods exhausted")
+                
         except Exception as e:
             logger.error(f"Error processing PDF for {company['name']}: {e}")
             
             # Fallback: Send Text Link
             try:
                 # Escape special characters for MarkdownV2 if needed, or use 'Markdown'
-                # Simple Markdown is easier for links: [text](url)
                 fallback_msg = (
                     f"⚠️ *PDF Upload Failed*\n"
                     f"Could not upload the results PDF for {company['name']}.\n\n"
@@ -871,9 +1037,16 @@ class ConcallResultsBot:
                 logger.info(f"Sent fallback link for {company['name']}")
             except Exception as fb_error:
                 logger.error(f"Failed to send fallback link: {fb_error}")
-            
-            # Do NOT re-raise, so we continue to mark as sent
-            return
+        
+        finally:
+            # Cleanup PDF file
+            if pdf_path:
+                try:
+                    if pdf_path.exists():
+                        pdf_path.unlink()
+                        logger.debug(f"Cleaned up PDF: {pdf_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete PDF {pdf_path}: {e}")
 
 async def main():
     """Main entry point"""

@@ -62,11 +62,13 @@ MESSAGE_TEMPLATE = """FY26 Q3 Corporate Earnings - Live
 📅 Date: {date}
 ⏰ Update: {time}"""
 
-# Network Timeouts (Seconds)
-TELEGRAM_CONNECT_TIMEOUT = 60
-TELEGRAM_READ_TIMEOUT = 600  # 10 minutes for large uploads
-TELEGRAM_WRITE_TIMEOUT = 600 # 10 minutes for large uploads
-PDF_DOWNLOAD_TIMEOUT = 300   # 5 minutes for slow servers
+# Network Timeouts (Seconds) - Optimized for mobile networks (Termux)
+TELEGRAM_CONNECT_TIMEOUT = 120  # 2 minutes - accounts for mobile network latency
+TELEGRAM_READ_TIMEOUT = 900     # 15 minutes for large uploads on slow networks
+TELEGRAM_WRITE_TIMEOUT = 900    # 15 minutes for large uploads on slow networks
+PDF_DOWNLOAD_TIMEOUT = 600      # 10 minutes for slow mobile connections
+PDF_MAX_SIZE_MB = 50            # Maximum PDF size in MB (Telegram limit)
+PDF_UPLOAD_CHUNK_SIZE = 64 * 1024  # 64KB chunks for memory efficiency
 
 # Image Generator Configuration
 # Font Sizes (in points)

@@ -242,13 +242,13 @@ class DatabaseManager:
             logger.error(f"Database initialization failed: {e}")
             raise
 
-    def get_sent_keys_for_date(self, date_str: str) -> Set[str]:
-        """Get all composite keys sent on a specific date"""
+    def get_sent_company_names_for_date(self, date_str: str) -> Set[str]:
+        """Get all company names sent on a specific date"""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute(
-                    "SELECT composite_key FROM sent_companies WHERE date_str = ?", 
+                    "SELECT company_name FROM sent_companies WHERE date_str = ?", 
                     (date_str,)
                 )
                 return {row[0] for row in cursor.fetchall()}
@@ -257,13 +257,13 @@ class DatabaseManager:
             return set()
 
     def mark_sent(self, companies: List[Dict[str, str]], date_str: str):
-        """Mark companies as sent in the database"""
+        """Mark companies as sent in the database (uses company name as unique key)"""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 data = [
                     (
-                        f"{c['name']}|{c['description']}", 
+                        c['name'],  # Use company name as the unique key
                         c['name'], 
                         c['description'], 
                         date_str
@@ -409,17 +409,18 @@ class ConcallResultsBot:
     
     def get_new_companies(self, all_companies: List[Dict[str, str]]) -> List[Dict[str, str]]:
         """
-        Filter companies to only return new ones not yet sent using SQLite
+        Filter companies to only return new ones not yet sent using SQLite.
+        Only checks by company name - ignores description changes for existing companies.
         """
         tz = pytz.timezone(config.TIMEZONE)
         today_str = datetime.now(tz).strftime('%Y-%m-%d')
         
-        sent_keys = self.db.get_sent_keys_for_date(today_str)
+        sent_company_names = self.db.get_sent_company_names_for_date(today_str)
         new_companies = []
         
         for c in all_companies:
-            composite_key = f"{c['name']}|{c['description']}"
-            if composite_key not in sent_keys:
+            # Check only by company name, not by description
+            if c['name'] not in sent_company_names:
                 new_companies.append(c)
         
         if new_companies:
